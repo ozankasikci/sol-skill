@@ -16,3 +16,6 @@ CHANGELOG.md    export-ignore
 # Build config itself
 .gitignore      export-ignore
 .gitattributes  export-ignore
+
+# Social preview source/render — repo marketing, not skill runtime
+media/          export-ignore

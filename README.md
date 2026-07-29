@@ -1,6 +1,13 @@
 # /sol — Claude plans, Sol implements, Claude reviews
 
+<p align="center">
+  <img src="media/social-preview.png" width="820"
+       alt="/sol — a Claude Code skill: Claude plans, GPT-5.6 Sol implements via Codex CLI, Claude reviews the diff" />
+</p>
+
 **Two frontier models, one job each. The model that wrote the diff never grades it.**
+
+A [Claude Code](https://docs.claude.com/en/docs/claude-code/overview) skill for multi-model AI coding: Claude writes the brief and reviews the real diff, while GPT-5.6 Sol writes the code through the [OpenAI Codex CLI](https://github.com/openai/codex).
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg?style=flat-square)](LICENSE)
 [![Claude Code](https://img.shields.io/badge/Claude%20Code-plugin-6f42c1?style=flat-square)](https://docs.claude.com/en/docs/claude-code/overview)
@@ -201,6 +208,61 @@ Worth stating plainly, since these are all choices and not omissions:
 - [Codex CLI](https://github.com/openai/codex) ≥ 0.144, authenticated via `codex login`
 - A git repository — the review phase diffs the working tree
 - Two subscriptions you likely already have: Claude and ChatGPT. No API keys.
+
+## FAQ
+
+**How do I use GPT-5 and Claude together for coding?**
+That's what this skill is for. Claude Code stays your interface and does the planning and
+review; the Codex CLI runs GPT-5.6 Sol as the implementer in the same working tree. You
+type `/sol <task>` and the handoff, the diff review, and the correction loop are handled
+for you.
+
+**Does this need an OpenAI API key?**
+No. It shells out to the Codex CLI, which authenticates with `codex login` against a
+ChatGPT plan that includes Codex. Same for Claude — your existing Claude Code session.
+Two subscriptions, zero API keys. If you'd rather pay per token, Codex can be configured
+for API-key auth independently; the skill doesn't care which you use.
+
+**How is this different from just asking Claude Code to write the code?**
+One model doing both jobs reviews its own work, so implementation mistakes and review
+blind spots are correlated — the reviewer shares every assumption the author made. Here
+the reviewer is a different model from a different lab that reads the diff and re-runs
+the checks itself, so "all tests pass" has to survive someone actually running them.
+
+**How is this different from `codex review` or a GitHub PR review bot?**
+Those review code after it exists, usually in a separate pass with no stake in the spec.
+`/sol` writes the acceptance criteria *before* implementation as runnable commands, then
+reviews against them, so the review has a standard to check rather than just vibes. It
+also loops: failures go back to the implementer as a `file:line` delta, twice at most.
+(For high-risk changes it *also* runs `codex exec review` as a third fresh-eyes pass.)
+
+**Is it slower than normal Claude Code?**
+Yes, materially. `xhigh` reasoning is the point of the trade, and the worked example above
+took 8m02s for a one-file change. Use it for work where being right matters more than
+being fast; use plain Claude Code for the rest. It's `disable-model-invocation: true`
+precisely so nothing routes through it unless you ask.
+
+**Can I use a different model as the implementer?**
+Yes. The model is passed explicitly with `-m` in
+[`skills/sol/SKILL.md`](skills/sol/SKILL.md) — change it to any model your Codex CLI can
+reach. Nothing else in the flow assumes Sol specifically.
+
+**Does it work outside Claude Code?**
+The skill is plain Markdown and installs on any [Agent Skills](https://agentskills.io)
+host with Bash access (Cursor, Copilot, Gemini CLI, and ~50 more). The host plays the
+planner/reviewer role, so the two-model split still holds — it just isn't Claude doing
+the reviewing.
+
+**Does it need a git repo?**
+Yes, in practice. The review phase diffs the working tree to isolate exactly what the
+implementer changed, and phase 2 checkpoints the tree first so a bad run is one
+`git reset` away. `scripts/check-codex.sh` warns you when the tree is dirty.
+
+**Is my code sent to OpenAI?**
+Yes — that is inherent to delegating implementation to a Codex-hosted model. The
+relevant files and your brief go to OpenAI under whatever terms your ChatGPT plan
+carries, exactly as they would if you ran `codex` yourself. If that's not acceptable for
+a given repo, don't use this skill there.
 
 ## Contributing
 
