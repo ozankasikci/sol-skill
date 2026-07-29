@@ -17,5 +17,6 @@ CHANGELOG.md    export-ignore
 .gitignore      export-ignore
 .gitattributes  export-ignore
 
-# Social preview source/render — repo marketing, not skill runtime
-media/          export-ignore
+# NOTE: media/ is deliberately NOT export-ignored. README.md ships in the archive
+# and references media/social-preview.png as its banner; stripping the image would
+# leave a broken reference for 75KB of savings.
