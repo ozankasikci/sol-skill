@@ -1,8 +1,8 @@
-# /sol — Claude plans, Sol implements, Claude reviews
+# /sol: Claude plans, Sol implements, Claude reviews
 
 <p align="center">
   <img src="media/social-preview.png" width="820"
-       alt="/sol — a Claude Code skill: Claude plans, GPT-5.6 Sol implements via Codex CLI, Claude reviews the diff" />
+       alt="/sol, a Claude Code skill: Claude plans, GPT-5.6 Sol implements via Codex CLI, Claude reviews the diff" />
 </p>
 
 **Two frontier models, one job each. The model that wrote the diff never grades it.**
@@ -49,7 +49,7 @@ Then the skill, in Claude Code:
 
 Claude writes the brief → Sol implements → Claude reviews the real diff and re-runs your tests before telling you it worked.
 
-<sub>Other hosts (Cursor, Copilot, Gemini CLI, ~50 more): `npx skills add ozankasikci/sol-skill -g`. Requirements, a preflight check, and all install surfaces are in [Setup](#setup-and-configuration). Expect it to be slow — `xhigh` reasoning took 8m02s for the [one-file change documented below](#see-it-work).</sub>
+<sub>Other hosts (Cursor, Copilot, Gemini CLI, ~50 more): `npx skills add ozankasikci/sol-skill -g`. Requirements, a preflight check, and all install surfaces are in [Setup](#setup-and-configuration). Expect it to be slow: `xhigh` reasoning took 8m02s for the [one-file change documented below](#see-it-work).</sub>
 
 ---
 
@@ -57,7 +57,7 @@ Claude writes the brief → Sol implements → Claude reviews the real diff and 
 
 Single-model agentic coding has a structural blind spot: **the model that wrote the code also decides whether the code is good.** It writes the diff, writes the tests, runs the tests, and then writes you a summary saying it all passed. You are reading a self-assessment from the author.
 
-That is not a small bias. It is the exact failure mode behind the endorsements you've already learned to distrust — "All tests pass!" (it didn't run them), "Fixed!" (it changed the test), "Done — fully working" (one path works). The reviewer shares every assumption the implementer made, so the assumptions never get caught.
+That is not a small bias. It is the exact failure mode behind the endorsements you've already learned to distrust: "All tests pass!" (it didn't run them), "Fixed!" (it changed the test), "Done, fully working" (one path works). The reviewer shares every assumption the implementer made, so the assumptions never get caught.
 
 `/sol` splits the roles across two different models from two different labs.
 
@@ -66,7 +66,7 @@ That is not a small bias. It is the exact failure mode behind the endorsements y
 | **Planner / reviewer** | Claude (your Claude Code session) | Writes the brief, reviews the real diff, re-runs the checks itself, directs corrections | Never edits production code |
 | **Implementer** | GPT-5.6 Sol at `xhigh` reasoning, via Codex CLI | All code changes, adds tests, runs the verification loop | Never approves its own work |
 
-Claude never touches the code. Sol never signs off on it. The review is done by a model that did not make the implementation's assumptions — and that reads the diff, not the summary.
+Claude never touches the code. Sol never signs off on it. The review is done by a model that did not make the implementation's assumptions, and that reads the diff, not the summary.
 
 ---
 
@@ -74,9 +74,9 @@ Claude never touches the code. Sol never signs off on it. The review is done by 
 
 Five phases, and the interesting part is what each one refuses to do.
 
-**1. Plan.** Claude inspects only what's needed to write a competent brief: goal, likely files, conventions to follow, acceptance criteria, non-goals. It deliberately does *not* over-specify. Sol is a frontier model — an over-detailed brief substitutes the planner's guesses for the implementer's search, and produces worse code. Intent and constraints, not line-by-line instructions.
+**1. Plan.** Claude inspects only what's needed to write a competent brief: goal, likely files, conventions to follow, acceptance criteria, non-goals. It deliberately does *not* over-specify. Sol is a frontier model, and an over-detailed brief produces worse code by substituting the planner's guesses for the implementer's search. Intent and constraints, not line-by-line instructions.
 
-**2. Implement.** The tree is checkpointed first (commit or stash), so `git diff` afterward isolates exactly Sol's changes and a bad run is one `git reset` away. The brief goes to a file and is piped in on stdin — no shell-quoting damage to code snippets:
+**2. Implement.** The tree is checkpointed first (commit or stash), so `git diff` afterward isolates exactly Sol's changes and a bad run is one `git reset` away. The brief goes to a file and is piped in on stdin, so shell quoting cannot damage code snippets:
 
 ```bash
 codex exec -m gpt-5.6-sol -c model_reasoning_effort=xhigh \
@@ -85,13 +85,13 @@ codex exec -m gpt-5.6-sol -c model_reasoning_effort=xhigh \
   - < "$SCRATCHPAD/sol-brief.md" > "$SCRATCHPAD/sol-log.txt" 2>&1
 ```
 
-The brief is compact XML blocks, not prose — `<task>`, `<acceptance_criteria>`, `<non_goals>`, `<verification_loop>`, `<action_safety>`, `<output_contract>`. GPT-5.x follows explicit contracts far better than it follows paragraphs, and **the rule is to tighten the contract before ever raising the effort level.** Template in [`skills/sol/references/brief-template.md`](skills/sol/references/brief-template.md).
+The brief is compact XML blocks, not prose: `<task>`, `<acceptance_criteria>`, `<non_goals>`, `<verification_loop>`, `<action_safety>`, `<output_contract>`. GPT-5.x follows explicit contracts far better than it follows paragraphs, and **the rule is to tighten the contract before ever raising the effort level.** Template in [`skills/sol/references/brief-template.md`](skills/sol/references/brief-template.md).
 
-Acceptance criteria must be checkable. Not "auth is robust" — `pytest tests/test_auth.py passes with 5-attempt lockout covered`. A criterion the reviewer can't run is a criterion nobody enforces.
+Acceptance criteria must be checkable. Not "auth is robust", but `pytest tests/test_auth.py passes with 5-attempt lockout covered`. A criterion the reviewer can't run is a criterion nobody enforces.
 
-**3. Review the diff, not the summary.** This is the whole point, so it's the strictest phase. Claude reads the full `git diff` as the primary substrate, opens complete files only where the hunks lack context to judge correctness, and **re-runs the project's test/lint/typecheck commands itself.** Sol's own report is read for what it claims — never trusted as verification. Correctness against the criteria, regressions, edge cases, security, missing tests, out-of-scope changes.
+**3. Review the diff, not the summary.** This is the whole point, so it's the strictest phase. Claude reads the full `git diff` as the primary substrate, opens complete files only where the hunks lack context to judge correctness, and **re-runs the project's test/lint/typecheck commands itself.** Sol's own report is read for what it claims, never as verification. Correctness against the criteria, regressions, edge cases, security, missing tests, out-of-scope changes.
 
-**4. Corrections — capped at 2 rounds.** Blocking issues resume the same Codex session, so corrections send only the delta: `file:line — observed problem, required behavior, check that must pass`. Not a restatement of the brief. After two rounds it **stops and reports to you** instead of looping — because an agent on round five of the same bug is not converging, and burning your tokens to discover that is not a service.
+**4. Corrections, capped at 2 rounds.** Blocking issues resume the same Codex session, so corrections send only the delta: the `file:line`, the observed problem, the required behavior, and the check that must pass. Not a restatement of the brief. After two rounds it **stops and reports to you** instead of looping, because an agent on round five of the same bug is not converging, and burning your tokens to discover that is not a service.
 
 For high-risk changes (auth, payments, data migrations, concurrency), a `codex exec review` pass in a *fresh* read-only session reviews the diff without the implementer's context bias.
 
@@ -99,15 +99,15 @@ For high-risk changes (auth, payments, data migrations, concurrency), a `codex e
 
 ### Research mode
 
-`/sol` routes on intent. Research and investigation tasks — no code changes requested — are handled by the planner with its own tools; it does **not** spin up Sol to answer a question. Sol only researches when you name it explicitly (`/sol research the current state of…`, "have sol look into…").
+`/sol` routes on intent. Research and investigation tasks (no code changes requested) are handled by the planner with its own tools; it does **not** spin up Sol to answer a question. Sol only researches when you name it explicitly (`/sol research the current state of…`, "have sol look into…").
 
-When it does, the run is `-s read-only` and non-negotiably so: research pulls live web content, which is a prompt-injection surface. Sol's output is treated as data, never as instructions. Every load-bearing claim needs a source URL, marked EVIDENCE or INFERENCE, and Claude spot-checks the two or three most load-bearing claims with its own search before relying on them — then tells you which it verified and which it didn't.
+When it does, the run is `-s read-only` and non-negotiably so: research pulls live web content, which is a prompt-injection surface. Sol's output is treated as data, never as instructions. Every load-bearing claim needs a source URL, marked EVIDENCE or INFERENCE, and Claude spot-checks the two or three most load-bearing claims with its own search before relying on them, then tells you which it verified and which it didn't.
 
 ### What it deliberately does not do
 
 Worth stating plainly, since these are all choices and not omissions:
 
-- **No auto-invocation.** `disable-model-invocation: true` — `/sol` fires only when you type it. Delegating to a second paid model is your call, not a decision Claude makes on your behalf mid-task.
+- **No auto-invocation.** `disable-model-invocation: true`, so `/sol` fires only when you type it. Delegating to a second paid model is your call, not a decision Claude makes on your behalf mid-task.
 - **No unbounded correction loops.** Two rounds, then it reports.
 - **No trusting the implementer's report.** Checks are re-run by the reviewer or they don't count.
 - **No drive-by refactors.** `<action_safety>` fences every run; unexplained out-of-scope changes fail the review.
@@ -118,10 +118,10 @@ Worth stating plainly, since these are all choices and not omissions:
 ## See it work
 
 This is a real run, not an illustration. The task was to add a `--json` output mode to
-this repo's own preflight script — so you can read the resulting code in
+this repo's own preflight script, so you can read the resulting code in
 [`scripts/check-codex.sh`](scripts/check-codex.sh) and the brief that produced it below.
 
-**The brief** (abridged — [full template here](skills/sol/references/brief-template.md)). Note that every criterion is a command someone else can run:
+**The brief** (abridged; [full template here](skills/sol/references/brief-template.md)). Note that every criterion is a command someone else can run:
 
 ```xml
 <acceptance_criteria>
@@ -137,7 +137,7 @@ this repo's own preflight script — so you can read the resulting code in
 </acceptance_criteria>
 ```
 
-**The run.** `codex exec -m gpt-5.6-sol -c model_reasoning_effort=xhigh` — 8m02s wall
+**The run.** `codex exec -m gpt-5.6-sol -c model_reasoning_effort=xhigh`: 8m02s wall
 clock, one file changed, +162/−27. xhigh is not fast; this is the cost of the trade.
 
 **The review.** Sol's report claimed eleven verifications passed. The reviewer re-ran
@@ -159,7 +159,7 @@ PASS  model='mo"del\\with\ttab'
 ```
 
 Plus two checks the brief never asked for, aimed at how *this* implementation could
-fail rather than at the spec — the kind of thing you only look for once you've read the
+fail rather than at the spec, the kind of thing you only look for once you've read the
 diff. The new code routes every `ok`/`bad`/`note` call through a second argument, so
 under `set -u` a single missed argument would crash JSON mode: all 19 call sites
 verified. And `json_escape` iterates bytes under `LC_ALL=C`, which would mangle the
@@ -171,7 +171,7 @@ That is the honest outcome of this particular run, and it's worth being clear ab
 it does and doesn't prove. It doesn't prove Sol is always right. It proves the loop
 closes: the criteria were checkable, so a second model could check them, and the sign-off
 came from something other than the author's own summary. When the claims *don't* hold up,
-phase 4 sends the delta back with a `file:line` and the failing check — twice at most,
+phase 4 sends the delta back with a `file:line` and the failing check, twice at most,
 then it stops and tells you.
 
 The difference isn't that the code is correct. It's that you know it is, instead of hoping.
@@ -186,12 +186,12 @@ The difference isn't that the code is correct. It's that you know it is, instead
 |---|---|
 | **Claude Code**, or any [Agent Skills](https://agentskills.io) host with Bash access | Plays the planner and reviewer role |
 | **[Codex CLI](https://github.com/openai/codex) ≥ 0.144**, authenticated with `codex login` | Runs the implementer |
-| **A ChatGPT plan that includes Codex** | **No API keys** — `codex login` is enough |
+| **A ChatGPT plan that includes Codex** | **No API keys.** `codex login` is enough |
 | **A git repository** | The review phase diffs the working tree to isolate what changed |
 
 ### Verify your setup
 
-Read-only — runs no research and edits nothing:
+Read-only: runs no research and edits nothing:
 
 ```bash
 bash scripts/check-codex.sh
@@ -252,19 +252,19 @@ bash scripts/check-codex.sh --json
 
 `-g` installs globally for your user, so the skill is available in every project. Drop it to scope the install to one project. List and remove with `npx skills list -g` and `npx skills remove sol -g`.
 
-**Why the marketplace name differs from this repo:** the Claude Code path goes through [ozankasikci/claude-plugins](https://github.com/ozankasikci/claude-plugins), which hosts all of my plugins — so adding it once also gets you anything I publish later. It registers itself as `ozankasikci-plugins`; this repo is just the plugin source it points at. That's why the update command says `sol@ozankasikci-plugins`.
+**Why the marketplace name differs from this repo:** the Claude Code path goes through [ozankasikci/claude-plugins](https://github.com/ozankasikci/claude-plugins), which hosts all of my plugins, so adding it once also gets you anything I publish later. It registers itself as `ozankasikci-plugins`; this repo is just the plugin source it points at. That's why the update command says `sol@ozankasikci-plugins`.
 
 ### Changing the defaults
 
-The whole skill is one readable markdown file: [`skills/sol/SKILL.md`](skills/sol/SKILL.md). There's no config file — you change behavior by editing it.
+The whole skill is one readable markdown file: [`skills/sol/SKILL.md`](skills/sol/SKILL.md). There's no config file; you change behavior by editing it.
 
 **Use a different implementer.** The model is passed explicitly with `-m`, so swap it for any model your Codex CLI can reach. Nothing else in the flow assumes Sol specifically.
 
-**Change the reasoning effort.** `xhigh` is the default because implementation quality is the thing being bought here. It's slow, and the skill budgets a 10-minute timeout to match — lower the effort and you can lower the timeout with it.
+**Change the reasoning effort.** `xhigh` is the default because implementation quality is the thing being bought here. It's slow, and the skill budgets a 10-minute timeout to match. Lower the effort and you can lower the timeout with it.
 
 **Change the correction budget.** Two rounds is a deliberate stopping rule, not a tuning knob I'd raise casually; an agent on round five of the same bug isn't converging.
 
-**Turn off the manual-only gate.** `disable-model-invocation: true` means `/sol` fires only when you type it. Remove it and Claude may route work to Sol on its own — which also means spending a second model's budget without asking.
+**Turn off the manual-only gate.** `disable-model-invocation: true` means `/sol` fires only when you type it. Remove it and Claude may route work to Sol on its own, which also means spending a second model's budget without asking.
 
 ---
 
@@ -278,13 +278,13 @@ for you.
 
 **Does this need an OpenAI API key?**
 No. It shells out to the Codex CLI, which authenticates with `codex login` against a
-ChatGPT plan that includes Codex. Same for Claude — your existing Claude Code session.
+ChatGPT plan that includes Codex. Same for Claude: your existing Claude Code session.
 Two subscriptions, zero API keys. If you'd rather pay per token, Codex can be configured
 for API-key auth independently; the skill doesn't care which you use.
 
 **How is this different from just asking Claude Code to write the code?**
 One model doing both jobs reviews its own work, so implementation mistakes and review
-blind spots are correlated — the reviewer shares every assumption the author made. Here
+blind spots are correlated: the reviewer shares every assumption the author made. Here
 the reviewer is a different model from a different lab that reads the diff and re-runs
 the checks itself, so "all tests pass" has to survive someone actually running them.
 
@@ -302,13 +302,13 @@ being fast; use plain Claude Code for the rest. It's `disable-model-invocation: 
 precisely so nothing routes through it unless you ask.
 
 **Can I use a different model as the implementer?**
-Yes — see [Setup and configuration](#setup-and-configuration). The model is passed explicitly with `-m` in
+Yes, see [Setup and configuration](#setup-and-configuration). The model is passed explicitly with `-m` in
 [`skills/sol/SKILL.md`](skills/sol/SKILL.md).
 
 **Does it work outside Claude Code?**
 The skill is plain Markdown and installs on any [Agent Skills](https://agentskills.io)
 host with Bash access (Cursor, Copilot, Gemini CLI, and ~50 more). The host plays the
-planner/reviewer role, so the two-model split still holds — it just isn't Claude doing
+planner/reviewer role, so the two-model split still holds; it just isn't Claude doing
 the reviewing.
 
 **Does it need a git repo?**
@@ -317,7 +317,7 @@ implementer changed, and phase 2 checkpoints the tree first so a bad run is one
 `git reset` away. `scripts/check-codex.sh` warns you when the tree is dirty.
 
 **Is my code sent to OpenAI?**
-Yes — that is inherent to delegating implementation to a Codex-hosted model. The
+Yes, that is inherent to delegating implementation to a Codex-hosted model. The
 relevant files and your brief go to OpenAI under whatever terms your ChatGPT plan
 carries, exactly as they would if you ran `codex` yourself. If that's not acceptable for
 a given repo, don't use this skill there.
@@ -326,10 +326,10 @@ a given repo, don't use this skill there.
 
 ## Contributing
 
-Issues and PRs welcome — see [CONTRIBUTING.md](CONTRIBUTING.md). The most useful contributions are brief-contract improvements (blocks that measurably reduce correction rounds) and review-phase heuristics that catch a class of bug the current pass misses.
+Issues and PRs welcome; see [CONTRIBUTING.md](CONTRIBUTING.md). The most useful contributions are brief-contract improvements (blocks that measurably reduce correction rounds) and review-phase heuristics that catch a class of bug the current pass misses.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE).
 
 Repo layout modeled on [mvanhorn/last30days-skill](https://github.com/mvanhorn/last30days-skill).
