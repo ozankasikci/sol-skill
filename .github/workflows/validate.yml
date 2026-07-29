@@ -17,23 +17,22 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Manifests are valid JSON
+      - name: Plugin manifest is valid JSON
         run: |
-          for f in .claude-plugin/plugin.json .claude-plugin/marketplace.json; do
-            python3 -c "import json,sys; json.load(open('$f'))" || exit 1
-            echo "ok  $f"
-          done
+          python3 -c "import json; json.load(open('.claude-plugin/plugin.json'))"
+          echo "ok  .claude-plugin/plugin.json"
 
-      - name: Versions agree across manifests and SKILL.md
+      - name: Version agrees between plugin.json and SKILL.md
         run: |
           plugin=$(python3 -c "import json; print(json.load(open('.claude-plugin/plugin.json'))['version'])")
-          market=$(python3 -c "import json; print(json.load(open('.claude-plugin/marketplace.json'))['plugins'][0]['version'])")
           skill=$(sed -n 's/^version:[[:space:]]*"\{0,1\}\([^"]*\)"\{0,1\}$/\1/p' skills/sol/SKILL.md | head -1)
-          echo "plugin.json=$plugin  marketplace.json=$market  SKILL.md=$skill"
-          if [ "$plugin" != "$market" ] || [ "$plugin" != "$skill" ]; then
-            echo "::error::version mismatch — bump all three together"
+          echo "plugin.json=$plugin  SKILL.md=$skill"
+          if [ "$plugin" != "$skill" ]; then
+            echo "::error::version mismatch — bump both together"
             exit 1
           fi
+          echo "Reminder: the marketplace entry in ozankasikci/claude-plugins pins"
+          echo "version $plugin and must be bumped there too on release."
 
       - name: SKILL.md has required frontmatter
         run: |
@@ -42,13 +41,15 @@ jobs:
             echo "ok  ${key}"
           done
 
-      - name: Plugin name matches marketplace entry
+      - name: Plugin name matches skill name
         run: |
           a=$(python3 -c "import json; print(json.load(open('.claude-plugin/plugin.json'))['name'])")
-          b=$(python3 -c "import json; print(json.load(open('.claude-plugin/marketplace.json'))['plugins'][0]['name'])")
-          c=$(sed -n 's/^name:[[:space:]]*//p' skills/sol/SKILL.md | head -1)
-          echo "plugin=$a marketplace=$b skill=$c"
-          [ "$a" = "$b" ] && [ "$a" = "$c" ] || { echo "::error::plugin/skill name mismatch"; exit 1; }
+          b=$(sed -n 's/^name:[[:space:]]*//p' skills/sol/SKILL.md | head -1)
+          echo "plugin=$a skill=$b"
+          if [ "$a" != "$b" ]; then
+            echo "::error::plugin/skill name mismatch"
+            exit 1
+          fi
 
       - name: Shell scripts parse and are executable
         run: |

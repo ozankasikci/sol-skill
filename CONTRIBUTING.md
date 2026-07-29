@@ -41,10 +41,19 @@ Then run the modified skill against a real task in a real repo, on a clean tree,
 report in your PR: the task, the number of correction rounds, and whether the review
 caught anything. A before/after on the same task is ideal.
 
-For manifest changes, confirm the JSON parses and versions agree across
-`.claude-plugin/plugin.json`, `.claude-plugin/marketplace.json`, and the `version:`
-field in `skills/sol/SKILL.md` — CI checks this, but it's faster to check locally.
+For manifest changes, confirm the JSON parses and that the version agrees between
+`.claude-plugin/plugin.json` and the `version:` field in `skills/sol/SKILL.md` — CI
+checks this, but it's faster to check locally.
 
 ## Releasing
 
-Bump the version in all three places above, add a `CHANGELOG.md` entry, and tag.
+This repo is the plugin source. The Claude Code marketplace that serves it lives in
+[ozankasikci/claude-plugins](https://github.com/ozankasikci/claude-plugins), which
+references this repo by `source: {source: github, repo: ozankasikci/sol-skill}`.
+
+Three steps, and the third is easy to forget:
+
+1. Bump the version in `.claude-plugin/plugin.json` and `skills/sol/SKILL.md` (CI enforces they match).
+2. Add a `CHANGELOG.md` entry, commit, and tag.
+3. Bump the pinned `version` for the `sol` entry in the marketplace repo, or installs
+   keep resolving to the old number.

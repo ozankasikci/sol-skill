@@ -8,7 +8,7 @@
 
 **Claude Code (recommended — auto-updates via marketplace):**
 ```
-/plugin marketplace add ozankasikci/sol-skill
+/plugin marketplace add ozankasikci/claude-plugins
 /plugin install sol
 ```
 
@@ -139,11 +139,13 @@ When it does, the run is `-s read-only` and non-negotiably so: research pulls li
 
 | Surface | Install | Updates |
 |---|---|---|
-| **Claude Code** (recommended) | `/plugin marketplace add ozankasikci/sol-skill` then `/plugin install sol` | Auto via marketplace, or `claude plugin update sol@sol-skill` |
+| **Claude Code** (recommended) | `/plugin marketplace add ozankasikci/claude-plugins` then `/plugin install sol` | Auto via marketplace, or `claude plugin update sol@ozankasikci-plugins` |
 | **Cursor, Copilot, Gemini CLI, + 50 more** | `npx skills add ozankasikci/sol-skill -g` | `npx skills update sol -g` |
 | **Manual** | Copy `skills/sol/` to `~/.claude/skills/sol/` | `git pull` and re-copy |
 
 `-g` installs globally for your user, available in every project. Drop it to scope per-project.
+
+The Claude Code path goes through [ozankasikci/claude-plugins](https://github.com/ozankasikci/claude-plugins), which hosts all of my plugins — so adding it once also gets you anything I publish later. The marketplace registers itself as `ozankasikci-plugins`; this repo is the plugin source it points at.
 
 ### Prerequisites
 

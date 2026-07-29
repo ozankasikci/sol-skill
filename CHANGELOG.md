@@ -25,7 +25,10 @@ First public release.
   for agents deciding whether delegation is available. Human output is unchanged and
   exit codes are shared between modes. Implemented via `/sol` itself — the run is
   documented in the README.
-- Claude Code plugin and marketplace manifests for one-command install.
+- Claude Code plugin manifest. Distribution goes through the existing
+  [ozankasikci/claude-plugins](https://github.com/ozankasikci/claude-plugins) marketplace
+  (`ozankasikci-plugins`) rather than a per-repo marketplace, so one
+  `/plugin marketplace add` covers every plugin in the collection.
 
 ### Fixed
 
