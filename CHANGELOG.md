@@ -20,6 +20,11 @@ First public release.
   implementation briefs, research briefs, and correction messages.
 - `scripts/check-codex.sh` — read-only preflight for CLI presence, `codex exec`
   availability, authentication, model resolution, and git-tree cleanliness.
+- `--json` mode on the preflight: single machine-readable object with `ready`,
+  `failures`, `warnings`, `model`, and per-check `{name, status, detail}`, for CI and
+  for agents deciding whether delegation is available. Human output is unchanged and
+  exit codes are shared between modes. Implemented via `/sol` itself — the run is
+  documented in the README.
 - Claude Code plugin and marketplace manifests for one-command install.
 
 ### Fixed

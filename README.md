@@ -68,6 +68,67 @@ For high-risk changes (auth, payments, data migrations, concurrency), a `codex e
 
 **5. Report.** Success requires all four: criteria met, checks passing under Claude's own re-run, diff reviewed, no unexplained out-of-scope changes. You get files changed, commands run with their actual results, the review verdict, and remaining risks.
 
+## See it work
+
+This is a real run, not an illustration. The task was to add a `--json` output mode to
+this repo's own preflight script — so you can read the resulting code in
+[`scripts/check-codex.sh`](scripts/check-codex.sh) and the brief that produced it below.
+
+**The brief** (abridged — [full template here](skills/sol/references/brief-template.md)). Note that every criterion is a command someone else can run:
+
+```xml
+<acceptance_criteria>
+- `bash scripts/check-codex.sh --json` prints a single valid JSON object and nothing else.
+- Top-level keys are exactly: ready (boolean), failures (integer), warnings (integer),
+  model (string), checks (array).
+- `ready` is true if and only if `failures` is 0.
+- The positional model argument works in either order relative to --json.
+- Exit codes unchanged: 0 when no failing checks, 1 when at least one.
+- Without --json, stdout is byte-for-byte what it is today.
+- Any string interpolated into JSON is escaped so a path containing a double quote
+  or a backslash cannot produce invalid JSON.
+</acceptance_criteria>
+```
+
+**The run.** `codex exec -m gpt-5.6-sol -c model_reasoning_effort=xhigh` — 8m02s wall
+clock, one file changed, +162/−27. xhigh is not fast; this is the cost of the trade.
+
+**The review.** Sol's report claimed eleven verifications passed. The reviewer re-ran
+them independently anyway, because a self-report is not evidence:
+
+```
+=== human mode byte-for-byte vs HEAD ===
+PASS identical stdout (exit old=0 new=0)
+=== arg order A: --json then model ===
+PASS  checks=9 ready=True failures=0 warnings=1 model='gpt-5.6-sol'
+=== arg order B: model then --json ===
+PASS  checks=9 ready=True failures=0 warnings=1 model='gpt-5.6-sol'
+=== failure path: valid JSON + exit 1 ===
+exit=1 (expect 1)
+PASS  checks=1 ready=False failures=1 warnings=0
+=== escaping: hostile model name and CODEX_HOME path ===
+PASS  model='mo"del\\with\ttab'
+  -> quotes, backslash, tab survived round-trip
+```
+
+Plus two checks the brief never asked for, aimed at how *this* implementation could
+fail rather than at the spec — the kind of thing you only look for once you've read the
+diff. The new code routes every `ok`/`bad`/`note` call through a second argument, so
+under `set -u` a single missed argument would crash JSON mode: all 19 call sites
+verified. And `json_escape` iterates bytes under `LC_ALL=C`, which would mangle the
+em-dashes already in the output strings: all 6 verified intact.
+
+**Result: approved, zero correction rounds.** Sol's claims held up.
+
+That is the honest outcome of this particular run, and it's worth being clear about what
+it does and doesn't prove. It doesn't prove Sol is always right. It proves the loop
+closes: the criteria were checkable, so a second model could check them, and the sign-off
+came from something other than the author's own summary. When the claims *don't* hold up,
+phase 4 sends the delta back with a `file:line` and the failing check — twice at most,
+then it stops and tells you.
+
+The difference isn't that the code is correct. It's that you know it is, instead of hoping.
+
 ## Research mode
 
 `/sol` routes on intent. Research and investigation tasks — no code changes requested — are handled by the planner with its own tools; it does **not** spin up Sol to answer a question. Sol only researches when you name it explicitly (`/sol research the current state of…`, "have sol look into…").
@@ -98,6 +159,25 @@ bash scripts/check-codex.sh
 ```
 
 It checks the CLI is on PATH, `codex exec` exists, you're authenticated, the model slug resolves, and you're in a clean git tree (which the diff-based review depends on). Failures come with the exact fix.
+
+Add `--json` for a machine-readable report — useful in CI, or when an agent needs to know whether delegation is available before it plans around it. Exit code is 0 when ready, 1 when any check fails:
+
+```bash
+bash scripts/check-codex.sh --json
+```
+```json
+{
+  "ready": true,
+  "failures": 0,
+  "warnings": 1,
+  "model": "gpt-5.6-sol",
+  "checks": [
+    { "name": "codex_on_path", "status": "ok",   "detail": "codex on PATH — /usr/local/bin/codex" },
+    { "name": "codex_version", "status": "ok",   "detail": "version — codex-cli 0.144.6" },
+    { "name": "git_tree_state", "status": "warn", "detail": "working tree is dirty\ncommit or stash first, so 'git diff' isolates exactly Sol's changes" }
+  ]
+}
+```
 
 ### Choosing a different implementer
 
