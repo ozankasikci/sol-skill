@@ -18,7 +18,7 @@ A [Claude Code](https://docs.claude.com/en/docs/claude-code/overview) skill for 
   <a href="#why-this-exists">Why&nbsp;this&nbsp;exists</a> &nbsp;·&nbsp;
   <a href="#how-it-works">How&nbsp;it&nbsp;works</a> &nbsp;·&nbsp;
   <a href="#see-it-work">A&nbsp;real&nbsp;run</a> &nbsp;·&nbsp;
-  <a href="#configuration">Configuration</a> &nbsp;·&nbsp;
+  <a href="#setup-and-configuration">Setup</a> &nbsp;·&nbsp;
   <a href="#faq">FAQ</a>
 </p>
 
@@ -28,123 +28,28 @@ A [Claude Code](https://docs.claude.com/en/docs/claude-code/overview) skill for 
 
 ## 🚀 Quick start
 
-Four steps. About two minutes, or thirty seconds if you already run the Codex CLI.
-
-### 1. Prerequisites
-
-`/sol` is an orchestrator — it drives a second CLI, so that CLI has to exist first. **Do this before installing the skill**, or `/sol` will fail on its first run.
+**1. Install.** `/sol` drives the [Codex CLI](https://github.com/openai/codex), so that goes first:
 
 ```bash
-npm i -g @openai/codex   # the Codex CLI, ≥ 0.144
-codex login              # a ChatGPT plan that includes Codex
+npm i -g @openai/codex && codex login
 ```
 
-You also need:
-
-| | Why |
-|---|---|
-| **Claude Code**, or any [Agent Skills](https://agentskills.io) host with Bash access | Plays the planner and reviewer role |
-| **A ChatGPT plan that includes Codex** | Runs the implementer. **No API keys** — `codex login` is enough |
-| **A git repository** | The review phase diffs the working tree to isolate what changed |
-
-### 2. Install the skill
-
-**Claude Code** — recommended, auto-updates via the marketplace:
+Then the skill, in Claude Code:
 
 ```
 /plugin marketplace add ozankasikci/claude-plugins
 /plugin install sol
 ```
 
-**Any other host** — Cursor, Copilot, Gemini CLI, and ~50 more:
-
-```bash
-npx skills add ozankasikci/sol-skill -g
-```
-
-<details>
-<summary>All install surfaces, updating, and uninstalling</summary>
-
-<br/>
-
-| Surface | Install | Update |
-|---|---|---|
-| **Claude Code** (recommended) | `/plugin marketplace add ozankasikci/claude-plugins` then `/plugin install sol` | Auto via marketplace, or `claude plugin update sol@ozankasikci-plugins` |
-| **Cursor, Copilot, Gemini CLI, + ~50 more** | `npx skills add ozankasikci/sol-skill -g` | `npx skills update sol -g` |
-| **Manual** | Copy `skills/sol/` into `~/.claude/skills/sol/` | `git pull`, then re-copy |
-
-`-g` installs globally for your user, so the skill is available in every project. Drop it to scope the install to one project.
-
-List and remove with `npx skills list -g` and `npx skills remove sol -g`.
-
-**Why the marketplace name differs from this repo:** the Claude Code path goes through [ozankasikci/claude-plugins](https://github.com/ozankasikci/claude-plugins), which hosts all of my plugins — so adding it once also gets you anything I publish later. It registers itself as `ozankasikci-plugins`; this repo is just the plugin source it points at. That's why the update command says `sol@ozankasikci-plugins`.
-
-</details>
-
-### 3. Verify the setup
-
-Confirm the pieces are wired up before you spend a run on it. This is read-only — it runs no research and edits nothing:
-
-```bash
-bash scripts/check-codex.sh
-```
-
-```
-/sol preflight
-
-  ok    codex on PATH — /usr/local/bin/codex
-  ok    version — codex-cli 0.144.6
-  ok    'codex exec' available (non-interactive mode)
-  ok    authenticated — /Users/you/.codex/auth.json present
-  ok    config default model — gpt-5.6-sol
-  ok    target model 'gpt-5.6-sol' present in local model cache
-  ok    inside a git work tree — diff-based review will work
-  ok    working tree clean — Sol's diff will be isolated
-
-Ready. 0 warning(s).
-```
-
-Every failure comes with the exact fix. Exit code is 0 when ready, 1 when any check fails.
-
-<details>
-<summary>Machine-readable output for CI (<code>--json</code>)</summary>
-
-<br/>
-
-Useful in CI, or when an agent needs to know whether delegation is available before planning around it:
-
-```bash
-bash scripts/check-codex.sh --json
-```
-```json
-{
-  "ready": true,
-  "failures": 0,
-  "warnings": 1,
-  "model": "gpt-5.6-sol",
-  "checks": [
-    { "name": "codex_on_path", "status": "ok",   "detail": "codex on PATH — /usr/local/bin/codex" },
-    { "name": "codex_version", "status": "ok",   "detail": "version — codex-cli 0.144.6" },
-    { "name": "git_tree_state", "status": "warn", "detail": "working tree is dirty\ncommit or stash first, so 'git diff' isolates exactly Sol's changes" }
-  ]
-}
-```
-
-`ready` is true if and only if `failures` is 0. Same exit codes as human mode.
-
-</details>
-
-### 4. Run it
-
-In any repo, on a clean tree:
+**2. Use it.** In any repo, on a clean tree:
 
 ```
 /sol add rate limiting to the upload endpoint
 ```
 
-Then Claude briefs Sol, Sol implements, and Claude reviews the diff and re-runs your checks before telling you it worked — walked through in [How it works](#how-it-works).
+Claude writes the brief → Sol implements → Claude reviews the real diff and re-runs your tests before telling you it worked.
 
-> **Two things to expect.** It is **slow** — `xhigh` reasoning is the whole trade, and the [documented run below](#see-it-work) took 8m02s for a one-file change. And it never fires on its own: `/sol` is `disable-model-invocation: true`, so spending a second model's budget stays your call.
+<sub>Other hosts (Cursor, Copilot, Gemini CLI, ~50 more): `npx skills add ozankasikci/sol-skill -g`. Requirements, a preflight check, and all install surfaces are in [Setup](#setup-and-configuration). Expect it to be slow — `xhigh` reasoning took 8m02s for the [one-file change documented below](#see-it-work).</sub>
 
 ---
 
@@ -273,7 +178,83 @@ The difference isn't that the code is correct. It's that you know it is, instead
 
 ---
 
-## Configuration
+## Setup and configuration
+
+### Requirements
+
+| | Why |
+|---|---|
+| **Claude Code**, or any [Agent Skills](https://agentskills.io) host with Bash access | Plays the planner and reviewer role |
+| **[Codex CLI](https://github.com/openai/codex) ≥ 0.144**, authenticated with `codex login` | Runs the implementer |
+| **A ChatGPT plan that includes Codex** | **No API keys** — `codex login` is enough |
+| **A git repository** | The review phase diffs the working tree to isolate what changed |
+
+### Verify your setup
+
+Read-only — runs no research and edits nothing:
+
+```bash
+bash scripts/check-codex.sh
+```
+
+```
+/sol preflight
+
+  ok    codex on PATH — /usr/local/bin/codex
+  ok    version — codex-cli 0.144.6
+  ok    'codex exec' available (non-interactive mode)
+  ok    authenticated — /Users/you/.codex/auth.json present
+  ok    config default model — gpt-5.6-sol
+  ok    target model 'gpt-5.6-sol' present in local model cache
+  ok    inside a git work tree — diff-based review will work
+  ok    working tree clean — Sol's diff will be isolated
+
+Ready. 0 warning(s).
+```
+
+Every failure comes with the exact fix. Exit code is 0 when ready, 1 when any check fails.
+
+<details>
+<summary>Machine-readable output for CI (<code>--json</code>)</summary>
+
+<br/>
+
+Useful in CI, or when an agent needs to know whether delegation is available before planning around it:
+
+```bash
+bash scripts/check-codex.sh --json
+```
+```json
+{
+  "ready": true,
+  "failures": 0,
+  "warnings": 1,
+  "model": "gpt-5.6-sol",
+  "checks": [
+    { "name": "codex_on_path", "status": "ok",   "detail": "codex on PATH — /usr/local/bin/codex" },
+    { "name": "codex_version", "status": "ok",   "detail": "version — codex-cli 0.144.6" },
+    { "name": "git_tree_state", "status": "warn", "detail": "working tree is dirty\ncommit or stash first, so 'git diff' isolates exactly Sol's changes" }
+  ]
+}
+```
+
+`ready` is true if and only if `failures` is 0. Same exit codes as human mode.
+
+</details>
+
+### All install surfaces
+
+| Surface | Install | Update |
+|---|---|---|
+| **Claude Code** (recommended) | `/plugin marketplace add ozankasikci/claude-plugins` then `/plugin install sol` | Auto via marketplace, or `claude plugin update sol@ozankasikci-plugins` |
+| **Cursor, Copilot, Gemini CLI, + ~50 more** | `npx skills add ozankasikci/sol-skill -g` | `npx skills update sol -g` |
+| **Manual** | Copy `skills/sol/` into `~/.claude/skills/sol/` | `git pull`, then re-copy |
+
+`-g` installs globally for your user, so the skill is available in every project. Drop it to scope the install to one project. List and remove with `npx skills list -g` and `npx skills remove sol -g`.
+
+**Why the marketplace name differs from this repo:** the Claude Code path goes through [ozankasikci/claude-plugins](https://github.com/ozankasikci/claude-plugins), which hosts all of my plugins — so adding it once also gets you anything I publish later. It registers itself as `ozankasikci-plugins`; this repo is just the plugin source it points at. That's why the update command says `sol@ozankasikci-plugins`.
+
+### Changing the defaults
 
 The whole skill is one readable markdown file: [`skills/sol/SKILL.md`](skills/sol/SKILL.md). There's no config file — you change behavior by editing it.
 
@@ -282,6 +263,8 @@ The whole skill is one readable markdown file: [`skills/sol/SKILL.md`](skills/so
 **Change the reasoning effort.** `xhigh` is the default because implementation quality is the thing being bought here. It's slow, and the skill budgets a 10-minute timeout to match — lower the effort and you can lower the timeout with it.
 
 **Change the correction budget.** Two rounds is a deliberate stopping rule, not a tuning knob I'd raise casually; an agent on round five of the same bug isn't converging.
+
+**Turn off the manual-only gate.** `disable-model-invocation: true` means `/sol` fires only when you type it. Remove it and Claude may route work to Sol on its own — which also means spending a second model's budget without asking.
 
 ---
 
@@ -319,7 +302,7 @@ being fast; use plain Claude Code for the rest. It's `disable-model-invocation: 
 precisely so nothing routes through it unless you ask.
 
 **Can I use a different model as the implementer?**
-Yes — see [Configuration](#configuration). The model is passed explicitly with `-m` in
+Yes — see [Setup and configuration](#setup-and-configuration). The model is passed explicitly with `-m` in
 [`skills/sol/SKILL.md`](skills/sol/SKILL.md).
 
 **Does it work outside Claude Code?**
