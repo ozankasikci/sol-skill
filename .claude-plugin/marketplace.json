@@ -1,0 +1,24 @@
+{
+  "name": "sol-skill",
+  "owner": {
+    "name": "Ozan Kaşıkçı",
+    "url": "https://github.com/ozankasikci"
+  },
+  "metadata": {
+    "description": "Marketplace hosting the /sol delegation plugin."
+  },
+  "plugins": [
+    {
+      "name": "sol",
+      "description": "Two frontier models, one job each. Claude plans and reviews; GPT-5.6 Sol writes the code via Codex CLI. The model that wrote the diff never grades it.",
+      "version": "1.0.0",
+      "author": {
+        "name": "Ozan Kaşıkçı",
+        "url": "https://github.com/ozankasikci"
+      },
+      "source": "./",
+      "category": "productivity",
+      "homepage": "https://github.com/ozankasikci/sol-skill"
+    }
+  ]
+}

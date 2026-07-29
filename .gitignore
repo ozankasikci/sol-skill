@@ -1,0 +1,13 @@
+.DS_Store
+__pycache__/
+*.py[cod]
+.venv/
+node_modules/
+*.log
+
+# Scratchpad artifacts from /sol runs, in case anyone runs the skill in this repo
+sol-brief.md
+sol-report.md
+sol-research.md
+sol-research-brief.md
+sol-log.txt

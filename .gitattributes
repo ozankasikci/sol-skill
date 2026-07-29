@@ -1,0 +1,18 @@
+# Exclude non-runtime files from `git archive` output.
+#
+# NOTE: skills/ and .claude-plugin/ are deliberately NOT export-ignored — Claude
+# Code's /plugin install fetches this same git archive tarball, so removing them
+# silently breaks installs.
+
+__pycache__/    export-ignore
+*.pyc           export-ignore
+.DS_Store       export-ignore
+
+# Repo-only docs and CI
+.github/        export-ignore
+CONTRIBUTING.md export-ignore
+CHANGELOG.md    export-ignore
+
+# Build config itself
+.gitignore      export-ignore
+.gitattributes  export-ignore

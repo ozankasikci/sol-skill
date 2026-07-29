@@ -1,0 +1,66 @@
+name: validate
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Manifests are valid JSON
+        run: |
+          for f in .claude-plugin/plugin.json .claude-plugin/marketplace.json; do
+            python3 -c "import json,sys; json.load(open('$f'))" || exit 1
+            echo "ok  $f"
+          done
+
+      - name: Versions agree across manifests and SKILL.md
+        run: |
+          plugin=$(python3 -c "import json; print(json.load(open('.claude-plugin/plugin.json'))['version'])")
+          market=$(python3 -c "import json; print(json.load(open('.claude-plugin/marketplace.json'))['plugins'][0]['version'])")
+          skill=$(sed -n 's/^version:[[:space:]]*"\{0,1\}\([^"]*\)"\{0,1\}$/\1/p' skills/sol/SKILL.md | head -1)
+          echo "plugin.json=$plugin  marketplace.json=$market  SKILL.md=$skill"
+          if [ "$plugin" != "$market" ] || [ "$plugin" != "$skill" ]; then
+            echo "::error::version mismatch — bump all three together"
+            exit 1
+          fi
+
+      - name: SKILL.md has required frontmatter
+        run: |
+          for key in name version description allowed-tools license; do
+            grep -qE "^${key}:" skills/sol/SKILL.md || { echo "::error::missing '${key}:' in skills/sol/SKILL.md"; exit 1; }
+            echo "ok  ${key}"
+          done
+
+      - name: Plugin name matches marketplace entry
+        run: |
+          a=$(python3 -c "import json; print(json.load(open('.claude-plugin/plugin.json'))['name'])")
+          b=$(python3 -c "import json; print(json.load(open('.claude-plugin/marketplace.json'))['plugins'][0]['name'])")
+          c=$(sed -n 's/^name:[[:space:]]*//p' skills/sol/SKILL.md | head -1)
+          echo "plugin=$a marketplace=$b skill=$c"
+          [ "$a" = "$b" ] && [ "$a" = "$c" ] || { echo "::error::plugin/skill name mismatch"; exit 1; }
+
+      - name: Shell scripts parse and are executable
+        run: |
+          for f in scripts/*.sh; do
+            bash -n "$f" || exit 1
+            [ -x "$f" ] || { echo "::error::$f is not executable (chmod +x)"; exit 1; }
+            echo "ok  $f"
+          done
+
+      - name: shellcheck
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+          # error severity only: bash -n above already covers syntax, and style/info
+          # notes shouldn't gate a merge.
+          shellcheck --severity=error scripts/*.sh
