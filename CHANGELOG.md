@@ -4,6 +4,24 @@ All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] — 2026-08-05
+
+### Changed
+
+- Reverted the background-run + live-watcher flow introduced in 1.1.0, based on real
+  use: when the planner armed the watcher through the wrong channel (a Bash
+  background task instead of a streaming monitor), its output went to a file nobody
+  read — leaving a "sol progress / no output" chip for the entire run. A flow that
+  degrades to silent is worse than the simple one. Runs are foreground with a
+  timeout again, as in 1.0.0.
+- The watcher (`sol-watch.py`) stays, demoted to an optional summary tool: Claude
+  uses `--once` to explain a failed or finished run instead of dumping raw JSON, and
+  it works in a second terminal for anyone who wants a live view. All 1.1.x fixes
+  (test-command detection, path relativization, benign-error filtering, named files
+  in the summary) are retained.
+- The run still writes the `--json` event log and split stderr, so post-hoc
+  summaries work; the elaborated per-file report contract from 1.1.2 is unchanged.
+
 ## [1.1.2] — 2026-08-05
 
 ### Changed
@@ -97,6 +115,7 @@ First public release.
   test/lint/typecheck commands itself — none of which are `codex exec` calls, so all
   of them were blocked.
 
+[1.2.0]: https://github.com/ozankasikci/sol-skill/releases/tag/v1.2.0
 [1.1.2]: https://github.com/ozankasikci/sol-skill/releases/tag/v1.1.2
 [1.1.1]: https://github.com/ozankasikci/sol-skill/releases/tag/v1.1.1
 [1.1.0]: https://github.com/ozankasikci/sol-skill/releases/tag/v1.1.0

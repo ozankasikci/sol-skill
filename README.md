@@ -47,15 +47,7 @@ Then the skill, in Claude Code:
 /sol add rate limiting to the upload endpoint
 ```
 
-Claude writes the brief → Sol implements → Claude reviews the real diff and re-runs your tests before telling you it worked. You see progress as it happens rather than a spinner:
-
-```
-[0m18s] step 2  · plan: I'll add the lockout counter to the auth module, then run the auth tests.
-[2m44s] step 7  · changed: src/auth/lockout.py
-[3m12s] step 9  · ran: pytest tests/test_auth.py -> exit 1
-[5m30s] step 14 · ran: pytest tests/test_auth.py -> exit 0
-[8m02s] step 16 · done: 16 steps, 2 files changed, 1204 output tokens
-```
+Claude writes the brief → Sol implements → Claude reviews the real diff and re-runs your tests before telling you it worked.
 
 <sub>Other hosts (Cursor, Copilot, Gemini CLI, ~50 more): `npx skills add ozankasikci/sol-skill -g`. Requirements, a preflight check, and all install surfaces are in [Setup](#setup-and-configuration). Expect it to be slow: `xhigh` reasoning took 8m02s for the [one-file change documented below](#see-it-work).</sub>
 
@@ -94,7 +86,7 @@ codex exec --json -m gpt-5.6-sol -c model_reasoning_effort=xhigh \
   > "$SCRATCHPAD/sol-events.jsonl" 2> "$SCRATCHPAD/sol-stderr.txt"
 ```
 
-It runs in the background so the planner stays free to relay progress, and `--json` makes stdout the event stream that feeds [Watching a run](#watching-a-run) below. stderr goes to its own file, since folding it in with `2>&1` would corrupt the stream.
+`--json` writes a JSONL event log alongside the report — the raw material for the optional [run summary](#summarizing-a-run) below. stderr goes to its own file, since folding it in with `2>&1` would corrupt the log.
 
 The brief is compact XML blocks, not prose: `<task>`, `<acceptance_criteria>`, `<non_goals>`, `<verification_loop>`, `<action_safety>`, `<output_contract>`. GPT-5.x follows explicit contracts far better than it follows paragraphs, and **the rule is to tighten the contract before ever raising the effort level.** Template in [`skills/sol/references/brief-template.md`](skills/sol/references/brief-template.md).
 
@@ -106,20 +98,25 @@ Acceptance criteria must be checkable. Not "auth is robust", but `pytest tests/t
 
 For high-risk changes (auth, payments, data migrations, concurrency), a `codex exec review` pass in a *fresh* read-only session reviews the diff without the implementer's context bias.
 
-### Watching a run
+### Summarizing a run
 
-`xhigh` runs take minutes, and a progress bar that only shows elapsed time tells you nothing about whether the run is working or wedged. So the run writes a `codex exec --json` event stream and [`sol-watch.py`](skills/sol/scripts/sol-watch.py) turns it into milestone lines: the opening plan, each file changed, each test/lint/typecheck command with its exit code, genuine errors, and a closing summary with token usage.
+The run writes a `codex exec --json` event log, and [`sol-watch.py`](skills/sol/scripts/sol-watch.py) turns it into a milestone summary — the opening plan, each file changed, each test command with its exit code, genuine errors, and a closing line naming the changed files with token usage:
 
-Routine `rg`/`ls`/`cat` calls are suppressed, which keeps a long run to roughly 5-15 lines. Two deliberate choices behind that:
+```
+[0m18s] step 2  · plan: I'll add the lockout counter to the auth module, then run the auth tests.
+[2m44s] step 7  · changed: src/auth/lockout.py
+[3m12s] step 9  · ran: pytest tests/test_auth.py -> exit 1
+[5m30s] step 14 · ran: pytest tests/test_auth.py -> exit 0
+[8m02s] step 16 · done: 16 steps, 2 files changed (src/auth/lockout.py, tests/test_auth.py), 1204 output tokens
+```
 
-- **Silence must not look like success.** A crashed run emits no milestone at all, so a gap of 5 minutes with no events is reported as a stall, and any non-zero exit is reported even for commands that aren't recognised verifiers.
-- **No false alarms.** codex reports some purely informational notices as `error` items (the "skill descriptions were shortened" one fires on every run). Those are filtered by an explicit narrow pattern, so a real error is never swallowed but the feed stays worth reading.
-
-It also works standalone if you'd rather watch in a terminal:
+This is an **optional** tool, not part of the flow: Claude uses it with `--once` to explain a failed or finished run instead of dumping raw JSON, and you can point it at the log yourself — live in a second terminal while a run is going, or after the fact:
 
 ```bash
-python3 skills/sol/scripts/sol-watch.py "$SCRATCHPAD/sol-events.jsonl"
+python3 skills/sol/scripts/sol-watch.py "$SCRATCHPAD/sol-events.jsonl" --once
 ```
+
+Routine `rg`/`ls`/`cat` calls are suppressed; test-looking commands surface even when they aren't a recognised runner; codex's informational notices that masquerade as `error` items are filtered narrowly so real errors never are.
 
 **5. Report.** Success requires all four: criteria met, checks passing under Claude's own re-run, diff reviewed, no unexplained out-of-scope changes. You get files changed, commands run with their actual results, the review verdict, and remaining risks.
 
@@ -212,7 +209,7 @@ The difference isn't that the code is correct. It's that you know it is, instead
 |---|---|
 | **Claude Code**, or any [Agent Skills](https://agentskills.io) host with Bash access | Plays the planner and reviewer role |
 | **[Codex CLI](https://github.com/openai/codex) ≥ 0.144**, authenticated with `codex login` | Runs the implementer |
-| **Python 3** | The progress watcher. Ships with macOS; already present on essentially every Linux dev box |
+| **Python 3** | The optional run-summary tool. Ships with macOS; already present on essentially every Linux dev box |
 | **A ChatGPT plan that includes Codex** | **No API keys.** `codex login` is enough |
 | **A git repository** | The review phase diffs the working tree to isolate what changed |
 
