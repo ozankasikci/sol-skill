@@ -26,6 +26,10 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   `2>&1`, which would corrupt the JSONL stream.
 - `sol-log.txt` is now `sol-events.jsonl` for implementation and correction runs.
   Research mode keeps a plain-text log.
+- Moved `check-codex.sh` from the repo root into `skills/sol/scripts/`. `npx skills add`
+  installs only the skill directory, so the preflight the README told those users to run
+  was never actually reaching them. Everything the skill needs at runtime now lives under
+  `skills/sol/`.
 
 ### Fixed
 

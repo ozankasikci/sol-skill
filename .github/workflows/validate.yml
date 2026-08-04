@@ -53,7 +53,7 @@ jobs:
 
       - name: Shell scripts parse and are executable
         run: |
-          for f in scripts/*.sh; do
+          for f in skills/sol/scripts/*.sh; do
             bash -n "$f" || exit 1
             [ -x "$f" ] || { echo "::error::$f is not executable (chmod +x)"; exit 1; }
             echo "ok  $f"
@@ -67,4 +67,4 @@ jobs:
           sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
           # error severity only: bash -n above already covers syntax, and style/info
           # notes shouldn't gate a merge.
-          shellcheck --severity=error scripts/*.sh
+          shellcheck --severity=error skills/sol/scripts/*.sh

@@ -14,7 +14,7 @@ In rough order of value:
    plus the check that catches it.
 3. **Host compatibility.** Making the skill work correctly on an Agent Skills host
    where it currently doesn't.
-4. **Preflight coverage.** A real failure mode `scripts/check-codex.sh` doesn't catch yet.
+4. **Preflight coverage.** A real failure mode `skills/sol/scripts/check-codex.sh` doesn't catch yet.
 
 ## Ground rules
 
@@ -31,11 +31,16 @@ In rough order of value:
 
 ## Testing a change
 
-There's no test suite — the deliverable is a prompt. Verify by using it:
+Most of the deliverable is a prompt, so most verification is by using it. The one part
+with real tests is the progress watcher:
 
 ```bash
-bash scripts/check-codex.sh          # preflight still passes
+python3 skills/sol/scripts/tests/test_sol_watch.py   # watcher: 43 checks
+bash skills/sol/scripts/check-codex.sh               # preflight still passes
 ```
+
+If you change the watcher's classification rules, add a fixture line rather than only
+adjusting an assertion — the fixtures are the record of what codex actually emits.
 
 Then run the modified skill against a real task in a real repo, on a clean tree, and
 report in your PR: the task, the number of correction rounds, and whether the review

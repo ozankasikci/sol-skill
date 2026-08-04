@@ -87,11 +87,14 @@ Five phases, and the interesting part is what each one refuses to do.
 **2. Implement.** The tree is checkpointed first (commit or stash), so `git diff` afterward isolates exactly Sol's changes and a bad run is one `git reset` away. The brief goes to a file and is piped in on stdin, so shell quoting cannot damage code snippets:
 
 ```bash
-codex exec -m gpt-5.6-sol -c model_reasoning_effort=xhigh \
+codex exec --json -m gpt-5.6-sol -c model_reasoning_effort=xhigh \
   -s workspace-write --color never \
   -o "$SCRATCHPAD/sol-report.md" \
-  - < "$SCRATCHPAD/sol-brief.md" > "$SCRATCHPAD/sol-log.txt" 2>&1
+  - < "$SCRATCHPAD/sol-brief.md" \
+  > "$SCRATCHPAD/sol-events.jsonl" 2> "$SCRATCHPAD/sol-stderr.txt"
 ```
+
+It runs in the background so the planner stays free to relay progress, and `--json` makes stdout the event stream that feeds [Watching a run](#watching-a-run) below. stderr goes to its own file, since folding it in with `2>&1` would corrupt the stream.
 
 The brief is compact XML blocks, not prose: `<task>`, `<acceptance_criteria>`, `<non_goals>`, `<verification_loop>`, `<action_safety>`, `<output_contract>`. GPT-5.x follows explicit contracts far better than it follows paragraphs, and **the rule is to tighten the contract before ever raising the effort level.** Template in [`skills/sol/references/brief-template.md`](skills/sol/references/brief-template.md).
 
@@ -142,13 +145,13 @@ Worth stating plainly, since these are all choices and not omissions:
 
 This is a real run, not an illustration. The task was to add a `--json` output mode to
 this repo's own preflight script, so you can read the resulting code in
-[`scripts/check-codex.sh`](scripts/check-codex.sh) and the brief that produced it below.
+[`skills/sol/scripts/check-codex.sh`](skills/sol/scripts/check-codex.sh) and the brief that produced it below.
 
 **The brief** (abridged; [full template here](skills/sol/references/brief-template.md)). Note that every criterion is a command someone else can run:
 
 ```xml
 <acceptance_criteria>
-- `bash scripts/check-codex.sh --json` prints a single valid JSON object and nothing else.
+- `bash skills/sol/scripts/check-codex.sh --json` prints a single valid JSON object and nothing else.
 - Top-level keys are exactly: ready (boolean), failures (integer), warnings (integer),
   model (string), checks (array).
 - `ready` is true if and only if `failures` is 0.
@@ -218,7 +221,7 @@ The difference isn't that the code is correct. It's that you know it is, instead
 Read-only: runs no research and edits nothing:
 
 ```bash
-bash scripts/check-codex.sh
+bash skills/sol/scripts/check-codex.sh
 ```
 
 ```
@@ -246,7 +249,7 @@ Every failure comes with the exact fix. Exit code is 0 when ready, 1 when any ch
 Useful in CI, or when an agent needs to know whether delegation is available before planning around it:
 
 ```bash
-bash scripts/check-codex.sh --json
+bash skills/sol/scripts/check-codex.sh --json
 ```
 ```json
 {
@@ -338,7 +341,7 @@ the reviewing.
 **Does it need a git repo?**
 Yes, in practice. The review phase diffs the working tree to isolate exactly what the
 implementer changed, and phase 2 checkpoints the tree first so a bad run is one
-`git reset` away. `scripts/check-codex.sh` warns you when the tree is dirty.
+`git reset` away. `skills/sol/scripts/check-codex.sh` warns you when the tree is dirty.
 
 **Is my code sent to OpenAI?**
 Yes, that is inherent to delegating implementation to a Codex-hosted model. The

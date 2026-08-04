@@ -13,6 +13,10 @@ __pycache__/    export-ignore
 CONTRIBUTING.md export-ignore
 CHANGELOG.md    export-ignore
 
+# Watcher tests are for contributors, not runtime. Safe to exclude because the
+# only thing referencing them (CONTRIBUTING.md) is export-ignored too.
+skills/sol/scripts/tests/  export-ignore
+
 # Build config itself
 .gitignore      export-ignore
 .gitattributes  export-ignore
