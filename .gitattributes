@@ -1,8 +1,15 @@
 # Exclude non-runtime files from `git archive` output.
 #
-# NOTE: skills/ and .claude-plugin/ are deliberately NOT export-ignored — Claude
-# Code's /plugin install fetches this same git archive tarball, so removing them
-# silently breaks installs.
+# Scope, measured rather than assumed: Claude Code's `/plugin install` does a
+# shallow `git clone`, NOT a `git archive`, so nothing here affects it — an
+# install on 2.0.44 contained .github/, CONTRIBUTING.md, CHANGELOG.md and the
+# tests despite all of them being listed below. These rules only shape actual
+# `git archive` output (GitHub's "Download ZIP", release tarballs, and any
+# consumer that fetches one).
+#
+# skills/ and .claude-plugin/ are deliberately NOT export-ignored regardless:
+# they are the payload, and a consumer that does use the tarball would break
+# without them.
 
 __pycache__/    export-ignore
 *.pyc           export-ignore
@@ -13,8 +20,9 @@ __pycache__/    export-ignore
 CONTRIBUTING.md export-ignore
 CHANGELOG.md    export-ignore
 
-# Watcher tests are for contributors, not runtime. Safe to exclude because the
-# only thing referencing them (CONTRIBUTING.md) is export-ignored too.
+# Watcher tests are for contributors, not runtime. Safe to exclude from tarballs
+# because the only thing referencing them (CONTRIBUTING.md) is excluded too.
+# (Plugin installs clone, so they still get them — that is fine, it is 8KB.)
 skills/sol/scripts/tests/  export-ignore
 
 # Build config itself
