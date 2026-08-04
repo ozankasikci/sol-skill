@@ -63,7 +63,7 @@ check("some_future_type" not in body, "ignores unknown item types silently")
 check("plan:" in body, "reports the opening plan once")
 check(body.count("plan:") == 1, "reports the plan only once")
 check("1204 output tokens" in body, "reports token usage in the summary")
-check("2 files changed" in body, "counts unique changed files")
+check("2 files changed (src/auth/lockout.py, tests/test_auth.py)" in body, "done line names the changed files")
 check("1 error" in body and "2 errors" not in body, "counts only genuine errors")
 
 print("\nfixture-crash.jsonl")

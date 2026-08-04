@@ -4,6 +4,16 @@ All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.2] — 2026-08-05
+
+### Changed
+
+- "N files changed, +355/-21" is a number, not a report. The watcher's closing
+  summary now names the changed files (first 5, then "+N more"), and the skill's
+  report phase requires a per-file breakdown — the `git diff --stat` table plus one
+  clause per file on what changed in it — along with the checks' actual results and
+  whether a commit was made.
+
 ## [1.1.1] — 2026-08-05
 
 ### Fixed
@@ -87,5 +97,6 @@ First public release.
   test/lint/typecheck commands itself — none of which are `codex exec` calls, so all
   of them were blocked.
 
+[1.1.2]: https://github.com/ozankasikci/sol-skill/releases/tag/v1.1.2
 [1.1.1]: https://github.com/ozankasikci/sol-skill/releases/tag/v1.1.1
 [1.1.0]: https://github.com/ozankasikci/sol-skill/releases/tag/v1.1.0

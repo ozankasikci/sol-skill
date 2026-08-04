@@ -1,6 +1,6 @@
 ---
 name: sol
-version: "1.1.1"
+version: "1.1.2"
 description: Delegate implementation (or, when explicitly requested, research) to GPT-5.6 Sol (xhigh reasoning) via Codex CLI. Claude plans, orchestrates, and reviews; Sol writes the code.
 argument-hint: "[implementation task]"
 disable-model-invocation: true
@@ -98,7 +98,14 @@ For high-risk changes (auth, payments, data migrations, concurrency), add one fr
 
 ## 5. Report
 
-Success requires: acceptance criteria met, checks pass under Claude's own re-run, diff reviewed, no unexplained out-of-scope changes. Final message: summary, files changed, checks run with results, review verdict, remaining risks.
+Success requires: acceptance criteria met, checks pass under Claude's own re-run, diff reviewed, no unexplained out-of-scope changes.
+
+The final message must let the user judge the change without re-deriving it. "11 files changed, 355 insertions(+)" is a number, not a report. Include:
+
+- **Per-file breakdown** — the `git diff --stat` table (path and +/- per file), plus one clause per file saying what changed in it ("`auth/lockout.py` — the counter and window logic"; "`tests/test_auth.py` — 4 new cases"). Group mechanical bulk ("9 snapshot files regenerated") rather than listing it.
+- **Checks run with their actual results** — command and outcome, from your own re-run.
+- **Review verdict and remaining risks** — including anything Sol touched that you did not expect.
+- If you committed, say so and quote the subject line; if not, say the tree is left dirty for the user to review.
 
 ## Research mode (only when the user explicitly names Sol as researcher)
 

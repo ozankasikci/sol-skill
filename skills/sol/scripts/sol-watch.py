@@ -243,7 +243,14 @@ class Watcher:
         usage = event.get("usage") or {}
         bits = [f"{self.steps} step{'s' if self.steps != 1 else ''}"]
         if self.files:
-            bits.append(f"{len(self.files)} file{'s' if len(self.files) != 1 else ''} changed")
+            # Name the files: "2 files changed" answers nothing; the names are
+            # what lets the reader decide whether to go look at the diff.
+            shown = ", ".join(self.files[:5])
+            if len(self.files) > 5:
+                shown += f", +{len(self.files) - 5} more"
+            bits.append(
+                f"{len(self.files)} file{'s' if len(self.files) != 1 else ''} changed ({shown})"
+            )
         if self.errors:
             bits.append(f"{self.errors} error{'s' if self.errors != 1 else ''}")
         out_tokens = usage.get("output_tokens")
