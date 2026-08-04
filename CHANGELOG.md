@@ -39,7 +39,7 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   worth reading. Filtered by a narrow explicit pattern; anything unmatched is
   still treated as a real error.
 
-## [1.0.0] — 2026-07-29
+## 1.0.0 — 2026-07-29
 
 First public release.
 
@@ -74,4 +74,3 @@ First public release.
   of them were blocked.
 
 [1.1.0]: https://github.com/ozankasikci/sol-skill/releases/tag/v1.1.0
-[1.0.0]: https://github.com/ozankasikci/sol-skill/releases/tag/v1.0.0
