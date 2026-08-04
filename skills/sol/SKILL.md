@@ -1,6 +1,6 @@
 ---
 name: sol
-version: "1.0.0"
+version: "1.1.0"
 description: Delegate implementation (or, when explicitly requested, research) to GPT-5.6 Sol (xhigh reasoning) via Codex CLI. Claude plans, orchestrates, and reviews; Sol writes the code.
 argument-hint: "[implementation task]"
 disable-model-invocation: true
@@ -30,14 +30,30 @@ Inspect only the files needed to write a competent brief. Produce a short plan: 
 
 First checkpoint the repo: if the working tree is dirty, commit or stash so `git diff` afterward isolates exactly Sol's changes and a bad run is trivially revertible.
 
-Write the brief to a scratchpad file (avoids shell-quoting issues), then run:
+Write the brief to a scratchpad file (avoids shell-quoting issues), then run this **in the background** so you stay free to relay progress:
 
 ```bash
-codex exec -m gpt-5.6-sol -c model_reasoning_effort=xhigh \
+codex exec --json -m gpt-5.6-sol -c model_reasoning_effort=xhigh \
   -s workspace-write --color never \
   -o "$SCRATCHPAD/sol-report.md" \
-  - < "$SCRATCHPAD/sol-brief.md" > "$SCRATCHPAD/sol-log.txt" 2>&1
+  - < "$SCRATCHPAD/sol-brief.md" \
+  > "$SCRATCHPAD/sol-events.jsonl" 2> "$SCRATCHPAD/sol-stderr.txt"
 ```
+
+`--json` turns stdout into a JSONL event stream. **stderr must go to its own file** — folding it in with `2>&1` corrupts the stream.
+
+Then arm the progress watcher so the user can see what Sol is doing instead of staring at a timer:
+
+```
+Monitor(
+  command: "python3 <skill-dir>/scripts/sol-watch.py \"$SCRATCHPAD/sol-events.jsonl\"",
+  description: "sol progress",
+  timeout_ms: 3600000,
+  persistent: false
+)
+```
+
+It reports the opening plan, each file changed, each test/lint/typecheck run with its exit code, genuine errors, a stall if nothing happens for 5 minutes, and a closing summary — then exits on its own. Routine reads and greps are suppressed. If the harness has no Monitor tool, run `python3 <skill-dir>/scripts/sol-watch.py "$SCRATCHPAD/sol-events.jsonl" --once` whenever the user asks what's happening.
 
 Structure the brief as compact XML blocks (GPT-5.x responds better to explicit contracts than to prose; tighten the contract before ever raising effort). See `references/brief-template.md` for a fill-in template.
 
@@ -49,8 +65,9 @@ Structure the brief as compact XML blocks (GPT-5.x responds better to explicit c
 - `<output_contract>` — final message ends with: changed files, exact commands run, and their results.
 
 Execution notes:
-- xhigh runs are slow. Use a 10-minute Bash timeout; for large tasks run in the background and wait for completion.
-- Read only `sol-report.md` for Sol's final report — never trust it as verification. Do not read `sol-log.txt` unless the run failed, and then only its tail.
+- xhigh runs are slow, commonly 5–15 minutes. Background plus the watcher is the default; a foreground call blocks you from reporting anything.
+- Read only `sol-report.md` for Sol's final report — never trust it as verification. Do not read `sol-events.jsonl` or `sol-stderr.txt` unless the run failed, and then only the tail.
+- Relay watcher notifications to the user as they arrive when they add information; do not re-narrate every line.
 
 ## 3. Review the diff, not the summary
 
@@ -67,11 +84,13 @@ Review as a senior engineer would — correctness against the acceptance criteri
 For blocking issues, resume the same Codex session:
 
 ```bash
-codex exec resume --last -m gpt-5.6-sol -c model_reasoning_effort=xhigh \
+codex exec resume --last --json -m gpt-5.6-sol -c model_reasoning_effort=xhigh \
   -s workspace-write --color never -o "$SCRATCHPAD/sol-report.md" \
   "<file:line — observed problem, required behavior, check that must pass>" \
-  > "$SCRATCHPAD/sol-log.txt" 2>&1
+  > "$SCRATCHPAD/sol-events.jsonl" 2> "$SCRATCHPAD/sol-stderr.txt"
 ```
+
+Correction rounds are also slow, so run them in the background and re-arm the watcher the same way.
 
 Send only the delta — the specific defect and required behavior — not a restatement of the whole brief. Re-review after each round. After 2 rounds, stop and report remaining issues to the user instead of looping.
 

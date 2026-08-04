@@ -39,3 +39,34 @@ First public release.
   of them were blocked.
 
 [1.0.0]: https://github.com/ozankasikci/sol-skill/releases/tag/v1.0.0
+
+## [1.1.0] — 2026-07-29
+
+### Added
+
+- Live progress visibility for long runs. The run now emits a `codex exec --json`
+  event stream and `skills/sol/scripts/sol-watch.py` turns it into milestone
+  lines: opening plan, each file changed, each test/lint/typecheck command with
+  its exit code, genuine errors, stalls, and a closing summary with token usage.
+  Routine reads and greps are suppressed, keeping a long run to ~5-15 lines.
+  Works as a harness Monitor or standalone in a terminal.
+- Test suite for the watcher (43 checks) over one captured real event stream and
+  two synthetic fixtures, wired into CI.
+
+### Changed
+
+- Implementation and correction runs are backgrounded by default. A foreground
+  call blocks the planner from reporting anything, which is what made runs feel
+  opaque.
+- stderr now goes to `sol-stderr.txt` instead of being folded into stdout with
+  `2>&1`, which would corrupt the JSONL stream.
+- `sol-log.txt` is now `sol-events.jsonl` for implementation and correction runs.
+  Research mode keeps a plain-text log.
+
+### Fixed
+
+- codex reports some informational notices as `error` items — the "skill
+  descriptions were shortened" one fires on every single run. Left unfiltered
+  that meant a false ERROR notification every time, so the feed would stop being
+  worth reading. Filtered by a narrow explicit pattern; anything unmatched is
+  still treated as a real error.

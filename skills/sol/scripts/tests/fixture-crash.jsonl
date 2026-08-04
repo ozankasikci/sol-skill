@@ -1,0 +1,6 @@
+{"type":"thread.started","thread_id":"019fcd80-dead-beef-0000-000000000002"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_1","item_type":"agent_message","text":"I'll start by reading the migration."}}
+{"type":"item.started","item":{"id":"item_2","item_type":"command_execution","command":"/bin/zsh -lc 'alembic upgrade head'","status":"in_progress"}}
+{"type":"item.completed","item":{"id":"item_2","item_type":"command_execution","command":"/bin/zsh -lc 'alembic upgrade head'","aggregated_output":"connection refused","exit_code":2,"status":"completed"}}
+{"type":"turn.failed","message":"model stream disconnected after 3 retries"}
