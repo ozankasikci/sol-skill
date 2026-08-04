@@ -61,6 +61,17 @@ VERIFY_RE = re.compile(
     re.IGNORECASE,
 )
 
+# A test run that doesn't use a recognised runner (`python3 test_calc.py`,
+# `./run_tests.sh`, `node spec/all.js`) must still surface — suppressing the
+# project's actual verification command was a real bug found by a real run.
+# Applied only to commands that are not pure reads.
+TEST_HINT_RE = re.compile(r"(?:^|[\s/_.-])(?:tests?|specs?)(?:$|[\s/_.\-:])", re.IGNORECASE)
+
+ROUTINE_RE = re.compile(
+    r"^(?:rg|ls|cat|sed|awk|head|tail|grep|find|pwd|echo|wc|which|file|stat|tree"
+    r"|git\s+(?:status|diff|log|show|ls-files|rev-parse|branch))\b"
+)
+
 FILE_CHANGE_TYPES = {"file_change", "patch_apply", "apply_patch", "file_edit"}
 
 # codex reports some purely informational notices as `error` items. They fire on
@@ -89,6 +100,17 @@ def strip_shell_wrapper(command: str) -> str:
     """`/bin/zsh -lc 'pytest tests/'` reads better as `pytest tests/`."""
     match = re.match(r"""^\S*(?:sh|zsh|bash)\s+-\S*c\s+(['"])(.*)\1\s*$""", command.strip(), re.S)
     return match.group(2).strip() if match else command.strip()
+
+
+def relativize(path: str) -> str:
+    """Real events carry absolute paths; show them relative to cwd when under it."""
+    try:
+        cwd = os.getcwd().rstrip(os.sep) + os.sep
+        if path.startswith(cwd):
+            return path[len(cwd):]
+    except OSError:
+        pass
+    return path
 
 
 def extract_paths(item: dict) -> list[str]:
@@ -178,7 +200,7 @@ class Watcher:
             return
 
         if item_type in FILE_CHANGE_TYPES:
-            paths = extract_paths(item)
+            paths = [relativize(p) for p in extract_paths(item)]
             for path in paths:
                 if path not in self.files:
                     self.files.append(path)
@@ -202,7 +224,9 @@ class Watcher:
             self.emit("changed", shorten(command, 90))
             return
 
-        if VERIFY_RE.search(command):
+        if VERIFY_RE.search(command) or (
+            TEST_HINT_RE.search(command) and not ROUTINE_RE.match(command)
+        ):
             self.emit("ran", f"{shorten(command, 80)} -> exit {exit_code}")
             return
 

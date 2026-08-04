@@ -55,7 +55,9 @@ check(body.count("pytest tests/test_auth.py") == 2, "reports both pytest runs")
 check("-> exit 1" in body and "-> exit 0" in body, "reports pytest exit codes")
 check("/bin/zsh -lc" not in body, "strips the shell wrapper from commands")
 check("src/auth/lockout.py" in body, "reports changed file from `path`")
-check("tests/test_auth.py" in body, "reports changed files from `paths` list")
+check("tests/test_auth.py" in body, "reports changed files from real `changes` shape")
+check("python3 test_calc.py" in body, "reports bare-script test run (real-run regression)")
+check("rg lockout" not in body, "still suppresses rg even when it mentions tests/")
 check("cat /nonexistent" in body, "reports non-zero exit of an unrecognised command")
 check("some_future_type" not in body, "ignores unknown item types silently")
 check("plan:" in body, "reports the opening plan once")
@@ -87,6 +89,16 @@ for cmd in ("rg --files", "ls -la", "cat foo.py", "git diff"):
     check(not sol_watch.VERIFY_RE.search(cmd), f"VERIFY_RE ignores {cmd!r}")
 check(bool(sol_watch.BENIGN_ERROR_RE.search("Skill descriptions were shortened")), "BENIGN_ERROR_RE matches notice")
 check(not sol_watch.BENIGN_ERROR_RE.search("sandbox denied write"), "BENIGN_ERROR_RE ignores real errors")
+for cmd in ("python3 test_calc.py", "./run_tests.sh", "node spec/all.js", "bash scripts/tests/run.sh"):
+    check(bool(sol_watch.TEST_HINT_RE.search(cmd)), f"TEST_HINT_RE matches {cmd!r}")
+for cmd in ("python3 setup.py", "ls -la src/", "git checkout main"):
+    check(not sol_watch.TEST_HINT_RE.search(cmd), f"TEST_HINT_RE ignores {cmd!r}")
+for cmd in ("rg foo tests/", "cat tests/test_a.py", "git diff tests/"):
+    check(bool(sol_watch.ROUTINE_RE.match(cmd)), f"ROUTINE_RE matches {cmd!r}")
+check(not sol_watch.ROUTINE_RE.match("python3 test_calc.py"), "ROUTINE_RE ignores script runs")
+import os as _os
+check(sol_watch.relativize(_os.getcwd() + "/src/a.py") == "src/a.py", "relativize strips cwd")
+check(sol_watch.relativize("/somewhere/else/a.py") == "/somewhere/else/a.py", "relativize keeps foreign paths")
 
 print()
 if failures:

@@ -1,9 +1,9 @@
 {
   "name": "sol",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "Two frontier models, one job each. Claude plans and reviews; GPT-5.6 Sol writes the code via Codex CLI. The model that wrote the diff never grades it.",
   "author": {
-    "name": "Ozan Ka\u015f\u0131k\u00e7\u0131",
+    "name": "Ozan Kaşıkçı",
     "url": "https://github.com/ozankasikci"
   },
   "homepage": "https://github.com/ozankasikci/sol-skill",

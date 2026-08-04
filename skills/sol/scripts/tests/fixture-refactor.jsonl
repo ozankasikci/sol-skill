@@ -8,7 +8,11 @@ Reading additional input from stdin...
 {"type":"item.completed","item":{"id":"item_3","item_type":"file_change","path":"src/auth/lockout.py"}}
 {"type":"item.started","item":{"id":"item_4","item_type":"command_execution","command":"/bin/zsh -lc 'pytest tests/test_auth.py'","status":"in_progress"}}
 {"type":"item.completed","item":{"id":"item_4","item_type":"command_execution","command":"/bin/zsh -lc 'pytest tests/test_auth.py'","aggregated_output":"2 failed, 4 passed","exit_code":1,"status":"completed"}}
-{"type":"item.completed","item":{"id":"item_5","item_type":"file_change","paths":["src/auth/lockout.py","tests/test_auth.py"]}}
+{"type":"item.completed","item":{"id":"item_5","type":"file_change","changes":[{"path":"src/auth/lockout.py","kind":"update"},{"path":"tests/test_auth.py","kind":"update"}],"status":"completed"}}
+{"type":"item.started","item":{"id":"item_5b","item_type":"command_execution","command":"/bin/zsh -lc 'python3 test_calc.py'","status":"in_progress"}}
+{"type":"item.completed","item":{"id":"item_5b","item_type":"command_execution","command":"/bin/zsh -lc 'python3 test_calc.py'","aggregated_output":"pass","exit_code":0,"status":"completed"}}
+{"type":"item.started","item":{"id":"item_5c","item_type":"command_execution","command":"/bin/zsh -lc 'rg lockout tests/'","status":"in_progress"}}
+{"type":"item.completed","item":{"id":"item_5c","item_type":"command_execution","command":"/bin/zsh -lc 'rg lockout tests/'","aggregated_output":"...","exit_code":0,"status":"completed"}}
 {"type":"item.started","item":{"id":"item_6","item_type":"command_execution","command":"/bin/zsh -lc 'pytest tests/test_auth.py'","status":"in_progress"}}
 {"type":"item.completed","item":{"id":"item_6","item_type":"command_execution","command":"/bin/zsh -lc 'pytest tests/test_auth.py'","aggregated_output":"6 passed","exit_code":0,"status":"completed"}}
 {"type":"item.started","item":{"id":"item_7","item_type":"command_execution","command":"/bin/zsh -lc 'git status --porcelain'","status":"in_progress"}}

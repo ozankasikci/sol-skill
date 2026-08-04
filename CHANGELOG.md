@@ -4,6 +4,20 @@ All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.1] — 2026-08-05
+
+### Fixed
+
+- The watcher suppressed the project's actual verification command when it wasn't a
+  recognised runner. A real run whose brief said "run `python3 test_calc.py`" showed
+  only the file-change line — the test result, the most important milestone, was
+  silently dropped. Commands that look like test runs (`python3 test_*.py`,
+  `./run_tests.sh`, `spec/`) now surface even off the runner list, while pure reads
+  that merely mention a tests directory (`rg foo tests/`) stay suppressed.
+- File paths in `file_change` events arrive absolute; they are now shown relative to
+  the working directory. The refactor fixture now pins the real event shape
+  (`changes: [{path, kind}]`) captured from codex-cli 0.144.6.
+
 ## [1.1.0] — 2026-08-04
 
 ### Added
@@ -73,4 +87,5 @@ First public release.
   test/lint/typecheck commands itself — none of which are `codex exec` calls, so all
   of them were blocked.
 
+[1.1.1]: https://github.com/ozankasikci/sol-skill/releases/tag/v1.1.1
 [1.1.0]: https://github.com/ozankasikci/sol-skill/releases/tag/v1.1.0
