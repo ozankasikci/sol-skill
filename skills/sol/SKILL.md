@@ -1,6 +1,6 @@
 ---
 name: sol
-version: "1.2.0"
+version: "1.2.1"
 description: Delegate implementation (or, when explicitly requested, research) to GPT-5.6 Sol (xhigh reasoning) via Codex CLI. Claude plans, orchestrates, and reviews; Sol writes the code.
 argument-hint: "[implementation task]"
 disable-model-invocation: true
@@ -73,10 +73,12 @@ For blocking issues, resume the same Codex session:
 
 ```bash
 codex exec resume --last --json -m gpt-5.6-sol -c model_reasoning_effort=xhigh \
-  -s workspace-write --color never -o "$SCRATCHPAD/sol-report.md" \
+  -o "$SCRATCHPAD/sol-report.md" \
   "<file:line — observed problem, required behavior, check that must pass>" \
   > "$SCRATCHPAD/sol-events.jsonl" 2> "$SCRATCHPAD/sol-stderr.txt"
 ```
+
+Do NOT pass `-s` or `--color` here — `codex exec resume` rejects both at parse time (the sandbox is inherited from the resumed session). Because stderr is redirected, that rejection is otherwise invisible: codex exits 2 instantly, the events file stays empty, the tree stays clean, and pre-existing green checks masquerade as a successful fix. **After every codex launch, confirm the events file is non-empty before drawing any conclusion; if it's empty, read the tail of `sol-stderr.txt` — the command itself failed.**
 
 Send only the delta — the specific defect and required behavior — not a restatement of the whole brief. Re-review after each round. After 2 rounds, stop and report remaining issues to the user instead of looping.
 

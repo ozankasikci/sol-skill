@@ -4,6 +4,19 @@ All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.1] — 2026-08-05
+
+### Fixed
+
+- The phase-4 correction command passed `-s workspace-write` and `--color never` to
+  `codex exec resume`, which rejects both at parse time (the sandbox is inherited
+  from the resumed session). With stderr redirected, the rejection was invisible:
+  codex exited 2 instantly, the events file stayed empty, the tree stayed clean,
+  and pre-existing green checks looked like a successful fix. Found in real use
+  when a correction round silently no-opped. The command is fixed, and the skill
+  now requires confirming the events file is non-empty after every codex launch
+  before drawing any conclusion.
+
 ## [1.2.0] — 2026-08-05
 
 ### Changed
@@ -115,6 +128,7 @@ First public release.
   test/lint/typecheck commands itself — none of which are `codex exec` calls, so all
   of them were blocked.
 
+[1.2.1]: https://github.com/ozankasikci/sol-skill/releases/tag/v1.2.1
 [1.2.0]: https://github.com/ozankasikci/sol-skill/releases/tag/v1.2.0
 [1.1.2]: https://github.com/ozankasikci/sol-skill/releases/tag/v1.1.2
 [1.1.1]: https://github.com/ozankasikci/sol-skill/releases/tag/v1.1.1
