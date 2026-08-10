@@ -577,6 +577,33 @@ with tempfile.TemporaryDirectory() as tmp:
     r = run(repo, bin_dir, "--wait", str(root / "nope"))
     check(r.returncode == 2, "--wait on an unknown run dir exits 2")
 
+print("--wait rehydrates the correct brief per slug (suffix-colliding briefs)")
+with tempfile.TemporaryDirectory() as tmp:
+    root = pathlib.Path(tmp)
+    bin_dir = root / "bin"
+    install_fake_codex(bin_dir)
+    repo = make_repo(root / "repo")
+    run_dir = root / "run"
+    # "02-auth.md" is a glob suffix match of "01-add-auth.md": both end in
+    # "-auth.md". A rehydration that recovers the brief by globbing
+    # `*-<slug>.md` instead of reading a recorded path would resolve slug
+    # "auth" to the wrong file.
+    write_tasks(run_dir, "add-auth", "auth")
+
+    r = run(repo, bin_dir, "--workers", "2", str(run_dir))
+    check(r.returncode == 0, f"launch exits 0 (stderr: {r.stderr[:200]})")
+
+    r = run(repo, bin_dir, "--wait", str(run_dir))
+    check(r.returncode == 0, "--wait after completion exits 0")
+
+    s = json.loads((run_dir / "summary.json").read_text())
+    by_slug = {w["slug"]: w for w in s["workers"]}
+    check(by_slug["add-auth"]["brief"].endswith("01-add-auth.md"),
+          "add-auth worker keeps its own brief after --wait rehydration")
+    check(by_slug["auth"]["brief"].endswith("02-auth.md"),
+          "auth worker (suffix of add-auth) gets its own brief, not add-auth's, "
+          f"after --wait rehydration (got {by_slug['auth']['brief']!r})")
+
 print()
 if failures:
     print(f"{len(failures)} check(s) failed:")

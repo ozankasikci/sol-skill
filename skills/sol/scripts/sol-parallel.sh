@@ -136,6 +136,9 @@ create_worktrees() {
   for i in "${!SLUGS[@]}"; do
     slug="${SLUGS[i]}"; wt="${WORKTREES[i]}"
     mkdir -p "$OUT_DIR/$slug"
+    # Record the brief now. Recovering it later by globbing `*-<slug>.md` is
+    # ambiguous: brief `01-add-auth.md` also matches slug `auth`.
+    printf '%s\n' "${BRIEF_OF[i]}" > "$OUT_DIR/$slug/brief"
     git worktree add -q -b "sol/$slug" "$wt" HEAD \
       || die "could not create worktree for $slug"
     if ! bootstrap_worktree "$wt" "$slug"; then
@@ -191,7 +194,7 @@ rehydrate() {
     [ -n "$slug" ] || continue
     SLUGS+=("$slug")
     WORKTREES+=("$WORKTREE_ROOT/$slug")
-    BRIEF_OF+=("$(ls "$TASKS_DIR"/*-"$slug".md 2>/dev/null | head -1)")
+    BRIEF_OF+=("$(cat "$OUT_DIR/$slug/brief" 2>/dev/null)")
   done < <(roster)
 }
 
@@ -250,9 +253,12 @@ post_process() {
       printf '%s\n' "$(( $(date +%s) - $(cat "$w/started-at") ))" > "$w/elapsed"
     fi
 
-    printf '%s\n' "$status" > "$w/status"
+    # `status` last: the re-attach idempotency guard treats its presence as
+    # "already processed", so an interruption after it but before these two
+    # would strand the worker with a correct status and empty metadata.
     printf '%s\n' "$files" > "$w/files-changed"
     printf '%s\n' "$commit" > "$w/commit"
+    printf '%s\n' "$status" > "$w/status"
   done
 }
 
