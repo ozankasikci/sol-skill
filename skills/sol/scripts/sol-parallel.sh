@@ -87,7 +87,10 @@ slug_for() {
   base="${base#[0-9][0-9]-}"
   base="$(printf '%s' "$base" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9' '-')"
   base="${base#-}"; base="${base%-}"
-  printf '%s' "${base:0:32}"
+  base="${base:0:32}"
+  # A brief name that reduces to nothing must not yield the branch `sol/`.
+  [ -n "$base" ] || base="task"
+  printf '%s' "$base"
 }
 
 bootstrap_worktree() {
@@ -114,11 +117,15 @@ create_worktrees() {
 
   SLUGS=(); WORKTREES=(); BRIEF_OF=()
   for brief in "${BRIEFS[@]}"; do
-    slug="$(slug_for "$brief")"
-    local n=2
-    while printf '%s\n' "${SLUGS[@]:-}" | grep -qx "$slug"; do
-      slug="$(slug_for "$brief")-$n"; n=$((n + 1))
+    local stem candidate n=2
+    stem="$(slug_for "$brief")"
+    candidate="$stem"
+    # "${SLUGS[@]:-}" on an empty array substitutes one empty word, which would
+    # match an empty candidate; guard on length instead.
+    while [ "${#SLUGS[@]}" -gt 0 ] && printf '%s\n' "${SLUGS[@]}" | grep -qx "$candidate"; do
+      candidate="$stem-$n"; n=$((n + 1))
     done
+    slug="$candidate"
     git show-ref --verify --quiet "refs/heads/sol/$slug" \
       && die "branch sol/$slug already exists; delete it or rename the brief"
     SLUGS+=("$slug"); BRIEF_OF+=("$brief")

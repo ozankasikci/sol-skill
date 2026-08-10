@@ -188,12 +188,54 @@ with tempfile.TemporaryDirectory() as tmp:
     base = (run_dir / "base").read_text().split("\t")
     check(base[0] == "main", "records the base branch")
 
-    # a pre-existing branch is a hard stop
+    # a pre-existing branch is a hard stop. Remove both worktrees but keep
+    # branch sol/beta and delete sol/alpha, so the batch collides on its
+    # SECOND brief while `alpha` (first, non-colliding) is the one that must
+    # never be created.
+    #
+    # This ordering is deliberate, not incidental: `git worktree add -b` also
+    # fails on its own when a branch already exists, so if the collision were
+    # on the FIRST brief, a naive implementation relying solely on that
+    # failure would abort on iteration 1 anyway, before ever touching the
+    # second brief -- masking the missing pre-check. Putting the collision on
+    # the SECOND brief is what actually exercises it: without an explicit
+    # check across the whole batch *before* any worktree is created, the
+    # naive path creates `alpha` (which doesn't collide) first, then only
+    # fails once it reaches `beta`.
     shutil.rmtree(wt_root)
     git(repo, "worktree", "prune")
+    git(repo, "branch", "-D", "sol/alpha")
     r = run(repo, bin_dir, "--workers", "2", "--dry-run", str(run_dir))
     check(r.returncode == 2, "exit 2 when sol/<slug> already exists")
-    check("sol/alpha" in r.stderr, "names the colliding branch")
+    check("sol/beta" in r.stderr, "names the colliding branch")
+    check(not (wt_root / "alpha").exists(),
+          "a collision anywhere aborts before creating any worktree, "
+          "even an earlier non-colliding one")
+    check(git(repo, "branch", "--list", "sol/alpha") == "",
+          "a collision anywhere creates no branch, even for an earlier "
+          "non-colliding brief")
+
+print("empty slug names")
+with tempfile.TemporaryDirectory() as tmp:
+    root = pathlib.Path(tmp)
+    bin_dir = root / "bin"
+    install_fake_codex(bin_dir)
+    repo = make_repo(root / "repo")
+    run_dir = root / "run"
+    write_tasks(run_dir, "!!!", "???")
+
+    wt_root = root / ".sol-worktrees" / "repo"
+
+    r = run(repo, bin_dir, "--workers", "2", "--dry-run", str(run_dir))
+    check(r.returncode == 0,
+          f"brief names that reduce to nothing still succeed (stderr: {r.stderr[:200]})")
+    check((wt_root / "task").is_dir(), "an empty slug falls back to 'task'")
+    check((wt_root / "task-2").is_dir(),
+          "a second empty slug becomes 'task-2', not a duplicate or 'sol/'")
+    check("sol/task" in git(repo, "branch", "--list", "sol/task"),
+          "creates branch sol/task, never the invalid sol/")
+    check("sol/task-2" in git(repo, "branch", "--list", "sol/task-2"),
+          "creates branch sol/task-2")
 
 print("worktree setup hook")
 with tempfile.TemporaryDirectory() as tmp:
