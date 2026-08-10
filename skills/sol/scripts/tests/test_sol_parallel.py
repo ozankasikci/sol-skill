@@ -74,7 +74,7 @@ if [ -z "${FAKE_EMPTY:-}" ]; then
 fi
 [ -n "$out_file" ] && printf 'fake report for %s\n' "$slug" > "$out_file"
 if [ -z "${FAKE_NOCHANGE:-}" ]; then
-  printf 'touched by %s\n' "$slug" > "$cd_dir/$slug.txt"
+  printf 'touched by %s\n' "$slug" > "$cd_dir/${FAKE_FILENAME:-$slug.txt}"
 fi
 exit "${FAKE_EXIT:-0}"
 """
@@ -640,6 +640,146 @@ with tempfile.TemporaryDirectory() as tmp:
     r = subprocess.run(["bash", str(SCRIPT), "--resume", str(run_dir)],
                        cwd=repo, capture_output=True, text=True, check=False, env=env)
     check(r.returncode == 2, "exit 2 when no corrections are pending")
+
+print("--resume: roster coupling (a bystander failure must still fail the run)")
+with tempfile.TemporaryDirectory() as tmp:
+    root = pathlib.Path(tmp)
+    bin_dir = root / "bin"
+    install_fake_codex(bin_dir)
+    repo = make_repo(root / "repo")
+    run_dir = root / "run"
+    write_tasks(run_dir, "alpha", "beta")
+    r = run(repo, bin_dir, "--workers", "2", str(run_dir))
+    check(r.returncode == 0, f"initial launch exits 0 (stderr: {r.stderr[:200]})")
+
+    # Simulate alpha having failed in the first round (a real failed-run from
+    # a bad launch) while beta succeeded, without needing to reproduce a
+    # genuine per-worker failure through the shared fake codex shim -- only
+    # beta is corrected and resumed; alpha is left exactly as a first-round
+    # failure would leave it.
+    (run_dir / "workers" / "alpha" / "status").write_text("failed-run\n")
+
+    (run_dir / "workers" / "beta" / "correction.md").write_text(
+        "beta.txt:1 — wrong value.\n")
+    r = run(repo, bin_dir, "--resume", str(run_dir))
+    check(r.returncode == 1,
+          f"a resume exits 1 when a bystander worker is still failed-run (got {r.returncode})")
+
+    s = json.loads((run_dir / "summary.json").read_text())
+    check(len(s["workers"]) == 2, "summary.json still has both workers after a partial resume")
+    by_slug = {w["slug"]: w for w in s["workers"]}
+    check(by_slug["alpha"]["status"] == "failed-run",
+          "the bystander's failed-run status is preserved, not silently dropped")
+    check(by_slug["beta"]["status"] == "ok", "the resumed worker is reclassified ok")
+
+print("--resume: clears terminal state so a failed worker can be reclassified")
+with tempfile.TemporaryDirectory() as tmp:
+    root = pathlib.Path(tmp)
+    bin_dir = root / "bin"
+    install_fake_codex(bin_dir)
+    repo = make_repo(root / "repo")
+    run_dir = root / "run"
+    write_tasks(run_dir, "alpha")
+
+    env = dict(os.environ)
+    env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
+    env["FAKE_EXIT"] = "1"
+    r = subprocess.run(["bash", str(SCRIPT), "--workers", "1", str(run_dir)],
+                        cwd=repo, capture_output=True, text=True, check=False, env=env)
+    check(r.returncode == 1, "initial launch fails (worker exits 1)")
+    check((run_dir / "workers" / "alpha" / "status").read_text().strip() == "failed-run",
+          "alpha is failed-run after round 1")
+
+    (run_dir / "workers" / "alpha" / "correction.md").write_text(
+        "alpha.txt:1 — fix the failure.\n")
+
+    env2 = dict(os.environ)
+    env2["PATH"] = f"{bin_dir}{os.pathsep}{env2['PATH']}"   # no FAKE_EXIT this round
+    r = subprocess.run(["bash", str(SCRIPT), "--resume", str(run_dir)],
+                        cwd=repo, capture_output=True, text=True, check=False, env=env2)
+    check(r.returncode == 0, f"resume with a successful correction exits 0 (stderr: {r.stderr[:200]})")
+    check((run_dir / "workers" / "alpha" / "status").read_text().strip() == "ok",
+          "a previously failed-run worker is reclassified ok after a successful resume, "
+          "not left stuck at its old status")
+
+print("--resume: a resumed no-op still reports files_changed, computed from the commit")
+with tempfile.TemporaryDirectory() as tmp:
+    root = pathlib.Path(tmp)
+    bin_dir = root / "bin"
+    install_fake_codex(bin_dir)
+    repo = make_repo(root / "repo")
+    run_dir = root / "run"
+    write_tasks(run_dir, "alpha")
+    r = run(repo, bin_dir, "--workers", "1", str(run_dir))
+    check(r.returncode == 0, f"initial launch exits 0 (stderr: {r.stderr[:200]})")
+
+    (run_dir / "workers" / "alpha" / "correction.md").write_text(
+        "alpha.txt:1 — double-check this, nothing to change.\n")
+    env = dict(os.environ)
+    env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
+    r = subprocess.run(["bash", str(SCRIPT), "--resume", str(run_dir)],
+                        cwd=repo, capture_output=True, text=True, check=False, env=env)
+    check(r.returncode == 0, f"a resumed no-op exits 0 (stderr: {r.stderr[:200]})")
+
+    s = json.loads((run_dir / "summary.json").read_text())
+    alpha = s["workers"][0]
+    check(alpha["status"] == "ok", "resumed no-op is still ok")
+    check(alpha["files_changed"] == ["alpha.txt"],
+          "a resumed no-op still reports the branch's real files_changed, computed from "
+          f"the commit rather than the (empty) pre-commit porcelain (got {alpha['files_changed']!r})")
+
+print("--resume: files_changed records the bare filename, even with a double quote in it")
+with tempfile.TemporaryDirectory() as tmp:
+    root = pathlib.Path(tmp)
+    bin_dir = root / "bin"
+    install_fake_codex(bin_dir)
+    repo = make_repo(root / "repo")
+    run_dir = root / "run"
+    write_tasks(run_dir, "alpha")
+    env = dict(os.environ)
+    env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
+    env["FAKE_FILENAME"] = 'weird"name.txt'
+    r = subprocess.run(["bash", str(SCRIPT), "--workers", "1", str(run_dir)],
+                        cwd=repo, capture_output=True, text=True, check=False, env=env)
+    check(r.returncode == 0, f"launch with a quoted filename exits 0 (stderr: {r.stderr[:200]})")
+    s = json.loads((run_dir / "summary.json").read_text())
+    check(s["workers"][0]["files_changed"] == ['weird"name.txt'],
+          "the bare filename is recorded, not git's porcelain-quoted form "
+          f"(got {s['workers'][0]['files_changed']!r})")
+
+print("--resume: skips a worker with no recorded session id rather than resuming blind")
+with tempfile.TemporaryDirectory() as tmp:
+    root = pathlib.Path(tmp)
+    bin_dir = root / "bin"
+    install_fake_codex(bin_dir)
+    repo = make_repo(root / "repo")
+    run_dir = root / "run"
+    write_tasks(run_dir, "alpha", "beta")
+    r = run(repo, bin_dir, "--workers", "2", str(run_dir))
+    check(r.returncode == 0, f"initial launch exits 0 (stderr: {r.stderr[:200]})")
+
+    # Simulate alpha never having recorded a session (failed-setup, or a round
+    # whose event log was empty) without reproducing the whole failure path --
+    # only the missing session-id file matters for this guard.
+    (run_dir / "workers" / "alpha" / "session-id").unlink()
+
+    (run_dir / "workers" / "alpha" / "correction.md").write_text("alpha.txt:1 — fix.\n")
+    (run_dir / "workers" / "beta" / "correction.md").write_text("beta.txt:1 — fix.\n")
+
+    arglog = root / "args.log"
+    env = dict(os.environ)
+    env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
+    env["FAKE_ARGLOG"] = str(arglog)
+    r = subprocess.run(["bash", str(SCRIPT), "--resume", str(run_dir)],
+                        cwd=repo, capture_output=True, text=True, check=False, env=env)
+    check(r.returncode == 0,
+          f"resume exits 0 when the other worker resumes cleanly (stderr: {r.stderr[:300]})")
+    check("alpha" in r.stderr and "no session id" in r.stderr,
+          f"reports the skipped worker by name (stderr: {r.stderr[:300]!r})")
+    check((run_dir / "workers" / "alpha" / "correction.md").exists(),
+          "a skipped worker's correction.md is not consumed")
+    args = arglog.read_text() if arglog.exists() else ""
+    check("beta" in args, "the other worker with a real session id still resumes")
 
 print()
 if failures:

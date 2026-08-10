@@ -184,6 +184,12 @@ resume_workers() {
     [ -n "$slug" ] || continue
     w="$OUT_DIR/$slug"
     [ -f "$w/correction.md" ] || continue
+    if [ ! -s "$w/session-id" ]; then
+      # Never launched (failed-setup) or its event log was empty, so there is
+      # no session to resume. `codex exec resume ""` would be nonsense.
+      printf 'sol-parallel: %s: no session id, cannot resume\n' "$slug" >&2
+      continue
+    fi
     pending=$((pending + 1))
     n=1
     while [ -f "$w/correction-$n.md" ]; do n=$((n + 1)); done
@@ -277,7 +283,6 @@ post_process() {
     fi
 
     if [ "$status" = "ok" ] && [ -z "$commit" ]; then
-      files="$(git -C "$wt" status --porcelain | sed 's/^...//')"
       git -C "$wt" add -A >/dev/null 2>&1
       if git -C "$wt" commit -q -m "sol: $slug" >/dev/null 2>&1; then
         commit="$(git -C "$wt" rev-parse HEAD)"
@@ -288,6 +293,20 @@ post_process() {
         status="failed-commit"
         commit=""
       fi
+    fi
+
+    # Cumulative since base, computed from the commit rather than from the
+    # pre-commit porcelain: the resumed-no-op rung never touches the worktree,
+    # and porcelain quotes "unusual" filenames -- notably one containing a
+    # double quote, which `-c core.quotePath=false` alone does NOT unquote;
+    # that setting only stops quoting for non-ASCII bytes, while git always
+    # backslash-escapes literal double quotes in its default text output. `-z`
+    # gives NUL-delimited, unquoted names regardless of content; translating
+    # NUL to newline matches how files-changed is already stored and parsed.
+    # This is the branch's whole diff, which is what a reviewer of it wants.
+    if [ "$status" = "ok" ]; then
+      files="$(git -C "$wt" diff --name-only -z \
+        "$(cut -f2 "$RUN_DIR/base")" HEAD | tr '\0' '\n')"
     fi
 
     if [ -f "$w/started-at" ]; then
