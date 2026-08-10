@@ -781,6 +781,111 @@ with tempfile.TemporaryDirectory() as tmp:
     args = arglog.read_text() if arglog.exists() else ""
     check("beta" in args, "the other worker with a real session id still resumes")
 
+print("--cleanup")
+with tempfile.TemporaryDirectory() as tmp:
+    root = pathlib.Path(tmp)
+    bin_dir = root / "bin"
+    install_fake_codex(bin_dir)
+    repo = make_repo(root / "repo")
+    run_dir = root / "run"
+    write_tasks(run_dir, "merged", "kept")
+    run(repo, bin_dir, "--workers", "2", str(run_dir))
+
+    git(repo, "cherry-pick", "sol/merged")     # simulate Claude integrating one branch
+
+    r = run(repo, bin_dir, "--cleanup", str(run_dir))
+    check(r.returncode == 0, f"--cleanup exits 0 (stderr: {r.stderr[:200]})")
+    check(not (root / ".sol-worktrees" / "repo" / "merged").exists(),
+          "removes the worktree of a merged branch")
+    check(git(repo, "branch", "--list", "sol/merged") == "",
+          "deletes the merged branch")
+    check((root / ".sol-worktrees" / "repo" / "kept").is_dir(),
+          "keeps the worktree of an unmerged branch")
+    check("sol/kept" in r.stdout, "names the surviving branch on stdout")
+    check(str(root / ".sol-worktrees" / "repo" / "kept") in r.stdout,
+          "names the surviving worktree path")
+
+    # Running --cleanup again must not misreport the branch it just removed.
+    # `git merge-base --is-ancestor` on a branch that no longer exists also
+    # returns non-zero (same as "not merged"), which -- without an explicit
+    # existence check -- would fall into the "kept" path and print a
+    # worktree path that was already deleted above.
+    r2 = run(repo, bin_dir, "--cleanup", str(run_dir))
+    check(r2.returncode == 0, f"a second --cleanup exits 0 (stderr: {r2.stderr[:200]})")
+    check("sol/merged" not in r2.stdout,
+          f"a second --cleanup does not phantom-report the already-removed branch "
+          f"(stdout: {r2.stdout!r})")
+    check("sol/kept" in r2.stdout,
+          "a second --cleanup still names the still-unmerged survivor")
+
+print("--cleanup: a no-changes worker (no commit, trivially merged) is removed")
+with tempfile.TemporaryDirectory() as tmp:
+    root = pathlib.Path(tmp)
+    bin_dir = root / "bin"
+    install_fake_codex(bin_dir)
+    repo = make_repo(root / "repo")
+    run_dir = root / "run"
+    write_tasks(run_dir, "quiet")
+    env = dict(os.environ)
+    env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
+    env["FAKE_NOCHANGE"] = "1"
+    r = subprocess.run(["bash", str(SCRIPT), "--workers", "1", str(run_dir)],
+                        cwd=repo, capture_output=True, text=True, check=False, env=env)
+    check(r.returncode == 0, f"a no-changes launch exits 0 (stderr: {r.stderr[:200]})")
+
+    branch_sha = git(repo, "rev-parse", "sol/quiet")
+    base_sha = git(repo, "rev-parse", "main")
+    check(branch_sha == base_sha,
+          "sanity: the no-changes branch really made no commit, so it is "
+          "trivially an ancestor of base")
+
+    r = run(repo, bin_dir, "--cleanup", str(run_dir))
+    check(r.returncode == 0, f"--cleanup on a no-changes run exits 0 (stderr: {r.stderr[:200]})")
+    check(not (root / ".sol-worktrees" / "repo" / "quiet").exists(),
+          "removes the worktree of a no-changes (trivially merged) branch")
+    check(git(repo, "branch", "--list", "sol/quiet") == "",
+          "deletes the no-changes (trivially merged) branch")
+    check("sol/quiet" not in r.stdout, "does not report the removed no-changes branch as kept")
+
+print("--cleanup: a removal that fails is reported, not silently swallowed")
+with tempfile.TemporaryDirectory() as tmp:
+    root = pathlib.Path(tmp)
+    bin_dir = root / "bin"
+    install_fake_codex(bin_dir)
+    repo = make_repo(root / "repo")
+    run_dir = root / "run"
+    write_tasks(run_dir, "locked")
+    r = run(repo, bin_dir, "--workers", "1", str(run_dir))
+    check(r.returncode == 0, f"launch exits 0 (stderr: {r.stderr[:200]})")
+
+    # Fast-forward, not cherry-pick: a cherry-pick's committer timestamp is
+    # "now", so it only reproduces the *exact same commit sha* as sol/locked
+    # (and thus registers as an ancestor) when both land in the same
+    # wall-clock second -- flaky under load. `merge --ff-only` moves main to
+    # sol/locked's own sha, so the ancestor relationship is exact and timing-independent.
+    git(repo, "merge", "-q", "--ff-only", "sol/locked")
+
+    wt = root / ".sol-worktrees" / "repo" / "locked"
+    lock_out = subprocess.run(["git", "worktree", "lock", str(wt)],
+                               cwd=repo, capture_output=True, text=True, check=False)
+    check(lock_out.returncode == 0, f"test setup: locking the worktree succeeds "
+          f"(stderr: {lock_out.stderr[:200]})")
+
+    r = run(repo, bin_dir, "--cleanup", str(run_dir))
+    check(r.returncode == 0, f"--cleanup still exits 0 when a removal fails "
+          f"(stderr: {r.stderr[:200]})")
+    check("locked" in r.stderr and ("incomplete" in r.stderr or "inconsistent" in r.stderr),
+          f"reports the failed removal by slug name on stderr, instead of the "
+          f"silent 2>/dev/null default (stderr: {r.stderr!r})")
+    check(wt.is_dir(), "the locked worktree is still on disk, not silently lost")
+    check(git(repo, "branch", "--list", "sol/locked") != "",
+          "the branch backing a failed removal is not silently deleted either")
+    check("sol/locked" in r.stdout,
+          "a branch that failed to be removed is still named on stdout, so it "
+          "isn't stranded silently")
+
+    subprocess.run(["git", "worktree", "unlock", str(wt)], cwd=repo, check=False)
+
 print()
 if failures:
     print(f"{len(failures)} check(s) failed:")

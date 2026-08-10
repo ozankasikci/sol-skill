@@ -406,6 +406,60 @@ wait_for_workers() {
   done
 }
 
+# Removes the worktree and branch for every worker whose branch is fully
+# merged into base; prints one `kept:` line per survivor so nothing a worker
+# produced is ever stranded without the caller being told it exists. When in
+# doubt (branch missing, removal partially failing) this errs toward keeping
+# and reporting rather than silently discarding.
+cleanup_run() {
+  local base slug wt rm_ok br_ok
+  base="$(cut -f1 "$RUN_DIR/base")"
+  while read -r slug; do
+    [ -n "$slug" ] || continue
+    wt="$WORKTREE_ROOT/$slug"
+
+    if ! git show-ref --verify --quiet "refs/heads/sol/$slug"; then
+      # No branch to check merge-base against: already cleaned up by a prior
+      # --cleanup run, or removed by hand. `git merge-base --is-ancestor` on a
+      # missing branch also returns non-zero -- indistinguishable from "not
+      # merged" -- which would otherwise fall into the "kept" branch below and
+      # print a worktree path for a branch that no longer exists. Report only
+      # if a worktree is still orphaned there; otherwise there is nothing left
+      # to strand and nothing to say.
+      if [ -d "$wt" ]; then
+        printf 'kept: sol/%s %s (orphaned worktree; branch no longer exists)\n' \
+          "$slug" "$wt"
+      fi
+      continue
+    fi
+
+    if git merge-base --is-ancestor "sol/$slug" "$base" 2>/dev/null; then
+      rm_ok=1; br_ok=1
+      git worktree remove --force "$wt" >/dev/null 2>&1 || rm_ok=0
+      git branch -q -D "sol/$slug" >/dev/null 2>&1 || br_ok=0
+      if [ "$rm_ok" -eq 0 ] || [ "$br_ok" -eq 0 ]; then
+        # Both removals are run under 2>/dev/null so a partial failure (one
+        # succeeds, the other doesn't) would otherwise say nothing and leave
+        # inconsistent state -- a branch with no worktree, or vice versa.
+        # Surface it on both channels: stderr for an operator watching the
+        # run, stdout (as a survivor) so the branch is never dropped from the
+        # printed account of what's left.
+        printf 'sol-parallel: %s: cleanup incomplete (worktree removed: %s, branch deleted: %s)\n' \
+          "$slug" "$([ "$rm_ok" -eq 1 ] && echo yes || echo no)" \
+          "$([ "$br_ok" -eq 1 ] && echo yes || echo no)" >&2
+        printf 'kept: sol/%s %s (merged but cleanup failed: worktree removed=%s branch deleted=%s)\n' \
+          "$slug" "$wt" \
+          "$([ "$rm_ok" -eq 1 ] && echo yes || echo no)" \
+          "$([ "$br_ok" -eq 1 ] && echo yes || echo no)"
+      fi
+    else
+      printf 'kept: sol/%s %s (%s)\n' \
+        "$slug" "$wt" "$(cat "$OUT_DIR/$slug/status" 2>/dev/null || echo unmerged)"
+    fi
+  done < <(roster)
+  git worktree prune
+}
+
 case "$MODE" in
   launch)  preflight_launch ;;
   *)       [ -d "$OUT_DIR" ] || die "no run directory to $MODE: $OUT_DIR" ;;
@@ -435,6 +489,15 @@ if [ "$MODE" = "resume" ]; then
   rehydrate
   post_process
   write_summary
+fi
+
+# --cleanup reports on a finished run rather than re-judging it, so it exits
+# here instead of falling through to the shared status-classification loop
+# below.
+if [ "$MODE" = "cleanup" ]; then
+  [ -f "$RUN_DIR/pids.all" ] || die "no completed run in $RUN_DIR"
+  cleanup_run
+  exit 0
 fi
 
 # Seed from create_worktrees: a worker whose bootstrap failed is never launched
