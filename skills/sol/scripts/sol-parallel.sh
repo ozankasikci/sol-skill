@@ -176,12 +176,38 @@ launch_workers() {
 worker_slugs() { cut -f1 "$RUN_DIR/pids"; }
 pid_of() { awk -F'\t' -v s="$1" '$1 == s { print $2 }' "$RUN_DIR/pids"; }
 
+# The full roster of the run, as opposed to worker_slugs() which is only the
+# batch currently being waited on. These differ under --resume, where `pids` is
+# rewritten to just the corrected workers; rehydrating from `pids` there would
+# silently drop every other worker from summary.json.
+roster() {
+  if [ -f "$RUN_DIR/pids.all" ]; then cut -f1 "$RUN_DIR/pids.all"; else worker_slugs; fi
+}
+
+rehydrate() {
+  local slug
+  SLUGS=(); WORKTREES=(); BRIEF_OF=()
+  while read -r slug; do
+    [ -n "$slug" ] || continue
+    SLUGS+=("$slug")
+    WORKTREES+=("$WORKTREE_ROOT/$slug")
+    BRIEF_OF+=("$(ls "$TASKS_DIR"/*-"$slug".md 2>/dev/null | head -1)")
+  done < <(roster)
+}
+
 post_process() {
   local i slug wt w code status session commit files
   for i in "${!SLUGS[@]}"; do
     slug="${SLUGS[i]}"; wt="${WORKTREES[i]}"; w="$OUT_DIR/$slug"
 
-    if [ -f "$w/status" ] && [ "$(cat "$w/status")" = "failed-setup" ]; then
+    # Idempotent: a worker already carries a status either from failed-setup
+    # (create_worktrees, before any launch) or from a prior post_process pass.
+    # The latter matters for --wait: if the original launcher wasn't actually
+    # killed by its caller's timeout and ran to completion on its own, it
+    # already classified and committed this worker. Re-running the commit
+    # logic here would find a clean worktree (already committed) and
+    # downgrade a real "ok" to "no-changes".
+    if [ -f "$w/status" ]; then
       continue
     fi
 
@@ -318,6 +344,14 @@ case "$MODE" in
   launch)  preflight_launch ;;
   *)       [ -d "$OUT_DIR" ] || die "no run directory to $MODE: $OUT_DIR" ;;
 esac
+
+if [ "$MODE" = "wait" ]; then
+  [ -f "$RUN_DIR/pids" ] || die "no pids file in $RUN_DIR"
+  rehydrate
+  wait_for_workers 0 || exit 75
+  post_process
+  write_summary
+fi
 
 if [ "$MODE" = "launch" ]; then
   create_worktrees; setup_status=$?

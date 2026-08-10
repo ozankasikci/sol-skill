@@ -543,6 +543,40 @@ with tempfile.TemporaryDirectory() as tmp:
     check(gamma["commit"] == "", "a rejected commit records no commit sha")
     check(git(repo, "rev-parse", "main") == base_sha, "base branch still untouched")
 
+print("--wait re-attach")
+with tempfile.TemporaryDirectory() as tmp:
+    root = pathlib.Path(tmp)
+    bin_dir = root / "bin"
+    install_fake_codex(bin_dir)
+    repo = make_repo(root / "repo")
+    run_dir = root / "run"
+    write_tasks(run_dir, "slow")
+
+    env = dict(os.environ)
+    env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
+    env["FAKE_SLEEP"] = "6"
+    launcher = subprocess.Popen(
+        ["bash", str(SCRIPT), "--workers", "1", str(run_dir)],
+        cwd=repo, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env,
+    )
+    import time
+    for _ in range(50):                       # wait for the pids file to appear
+        if (run_dir / "pids").is_file():
+            break
+        time.sleep(0.1)
+
+    r = run(repo, bin_dir, "--wait", str(run_dir))
+    check(r.returncode == 75, f"--wait returns 75 while a worker is live (got {r.returncode})")
+
+    launcher.wait(timeout=60)
+    r = run(repo, bin_dir, "--wait", str(run_dir))
+    check(r.returncode == 0, "--wait returns 0 once every worker has finished")
+    s = json.loads((run_dir / "summary.json").read_text())
+    check(s["workers"][0]["status"] == "ok", "--wait leaves a correct summary")
+
+    r = run(repo, bin_dir, "--wait", str(root / "nope"))
+    check(r.returncode == 2, "--wait on an unknown run dir exits 2")
+
 print()
 if failures:
     print(f"{len(failures)} check(s) failed:")
