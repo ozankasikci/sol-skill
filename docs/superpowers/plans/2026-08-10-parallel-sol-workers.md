@@ -526,6 +526,9 @@ create_worktrees() {
   for i in "${!SLUGS[@]}"; do
     slug="${SLUGS[i]}"; wt="${WORKTREES[i]}"
     mkdir -p "$OUT_DIR/$slug"
+    # Record the brief now. Recovering it later by globbing `*-<slug>.md` is
+    # ambiguous: brief `01-add-auth.md` also matches slug `auth`.
+    printf '%s\n' "${BRIEF_OF[i]}" > "$OUT_DIR/$slug/brief"
     git worktree add -q -b "sol/$slug" "$wt" HEAD \
       || die "could not create worktree for $slug"
     if ! bootstrap_worktree "$wt" "$slug"; then
@@ -899,9 +902,12 @@ post_process() {
       fi
     fi
 
-    printf '%s\n' "$status" > "$w/status"
+    # `status` last: the re-attach idempotency guard treats its presence as
+    # "already processed", so an interruption after it but before these two
+    # would strand the worker with a correct status and empty metadata.
     printf '%s\n' "$files" > "$w/files-changed"
     printf '%s\n' "$commit" > "$w/commit"
+    printf '%s\n' "$status" > "$w/status"
   done
 }
 
@@ -1060,7 +1066,7 @@ rehydrate() {
     [ -n "$slug" ] || continue
     SLUGS+=("$slug")
     WORKTREES+=("$WORKTREE_ROOT/$slug")
-    BRIEF_OF+=("$(ls "$TASKS_DIR"/*-"$slug".md 2>/dev/null | head -1)")
+    BRIEF_OF+=("$(cat "$OUT_DIR/$slug/brief" 2>/dev/null)")
   done < <(roster)
 }
 ```
@@ -1175,7 +1181,11 @@ resume_workers() {
     while [ -f "$w/correction-$n.md" ]; do n=$((n + 1)); done
     mv "$w/correction.md" "$w/correction-$n.md"
     date +%s > "$w/started-at"
-    rm -f "$w/exit-code"
+    # Clear the terminal state. `post_process` skips any worker that already
+    # has a `status` file — the guard that stops a re-attach from downgrading a
+    # committed worker to `no-changes` — so a resumed worker that kept its old
+    # status would be skipped forever and never reclassified.
+    rm -f "$w/exit-code" "$w/status" "$w/files-changed" "$w/commit"
     nohup bash -c '
       cd "$3" || exit 2
       codex exec resume "$6" --json -m "$1" -c model_reasoning_effort="$2" \
