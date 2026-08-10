@@ -931,14 +931,167 @@ with tempfile.TemporaryDirectory() as tmp:
     check(r.returncode == 0, f"--cleanup exits 0 on a failed-setup-only run "
           f"(stderr: {r.stderr[:200]})")
     # A failed-setup worker never ran codex and so never committed: its branch
-    # is exactly base, trivially integrated, with no real work to strand --
-    # so the honest outcome is removal, not a "kept" line for it.
-    check(not wt.exists(),
-          "removes the worktree of a failed-setup worker with no real work to lose")
-    check(git(repo, "branch", "--list", "sol/badsetup") == "",
-          "deletes the failed-setup worker's branch")
-    check("sol/badsetup" not in r.stdout,
-          f"does not print a kept line for a removed failed-setup worker "
+    # is exactly base, trivially "integrated" by ancestry alone. But integration
+    # is necessary, not sufficient -- removability also requires a terminal
+    # status that means success (ok/no-changes). "failed-setup" is neither, so
+    # the conservative, honest outcome is to keep and name it, same as any
+    # other non-terminal-success status, not to assume there was nothing to lose.
+    check(wt.is_dir(),
+          "keeps the worktree of a failed-setup worker (status isn't ok/no-changes)")
+    check(git(repo, "branch", "--list", "sol/badsetup") != "",
+          "keeps the branch of a failed-setup worker")
+    check("sol/badsetup" in r.stdout and str(wt) in r.stdout,
+          f"names the failed-setup worker's branch and worktree on stdout, now that "
+          f"it is visible to --cleanup at all (stdout: {r.stdout!r})")
+
+print("--cleanup: a failed-commit worker's uncommitted work survives --cleanup")
+with tempfile.TemporaryDirectory() as tmp:
+    root = pathlib.Path(tmp)
+    bin_dir = root / "bin"
+    install_fake_codex(bin_dir)
+    repo = make_repo(root / "repo")
+    run_dir = root / "run"
+    write_tasks(run_dir, "gamma")
+
+    # Same rejecting pre-commit hook as the "summary: rejected commit" test:
+    # worktrees share the main repo's .git/hooks, so installing it here makes
+    # every worker's auto-commit attempt fail.
+    hooks = repo / ".git" / "hooks"
+    hooks.mkdir(parents=True, exist_ok=True)
+    pre_commit = hooks / "pre-commit"
+    pre_commit.write_text("#!/usr/bin/env bash\nexit 1\n")
+    pre_commit.chmod(0o755)
+
+    r = run(repo, bin_dir, "--workers", "1", str(run_dir))
+    check(r.returncode == 1, f"a rejected commit fails the run (stderr: {r.stderr[:200]})")
+    check((run_dir / "workers" / "gamma" / "status").read_text().strip() == "failed-commit",
+          "sanity: the worker really is failed-commit")
+
+    wt = root / ".sol-worktrees" / "repo" / "gamma"
+    worked_file = wt / "gamma.txt"
+    check(worked_file.is_file(),
+          "sanity: the worker's real (staged, uncommitted) file is really there")
+    # The branch itself has no commit -- git add -A staged the file but the
+    # hook rejected the commit -- so it sits exactly at base and would look
+    # trivially "integrated" by ancestry alone.
+    check(git(repo, "rev-parse", "sol/gamma") == git(repo, "rev-parse", "main"),
+          "sanity: the failed-commit branch really sits exactly at base "
+          "(nothing was ever committed)")
+
+    r = run(repo, bin_dir, "--cleanup", str(run_dir))
+    check(r.returncode == 0, f"--cleanup exits 0 (stderr: {r.stderr[:200]})")
+    check(wt.is_dir(),
+          "does NOT remove the worktree of a failed-commit worker -- "
+          "its real work is staged-but-uncommitted there")
+    check(git(repo, "branch", "--list", "sol/gamma") != "",
+          "does NOT delete the failed-commit worker's branch")
+    check(worked_file.is_file(),
+          "the failed-commit worker's uncommitted file is still on disk, not destroyed")
+    check("sol/gamma" in r.stdout and str(wt) in r.stdout,
+          f"names the failed-commit worker's branch and worktree on stdout "
+          f"(stdout: {r.stdout!r})")
+    check("uncommitted" in r.stdout,
+          f"the kept line says the work is uncommitted, not just 'failed-commit' "
+          f"(stdout: {r.stdout!r})")
+
+print("--cleanup: an integrated worker with unrelated uncommitted edits is kept, not force-removed")
+with tempfile.TemporaryDirectory() as tmp:
+    root = pathlib.Path(tmp)
+    bin_dir = root / "bin"
+    install_fake_codex(bin_dir)
+    repo = make_repo(root / "repo")
+    run_dir = root / "run"
+    write_tasks(run_dir, "solo")
+    r = run(repo, bin_dir, "--workers", "1", str(run_dir))
+    check(r.returncode == 0, f"launch exits 0 (stderr: {r.stderr[:200]})")
+    check((run_dir / "workers" / "solo" / "status").read_text().strip() == "ok",
+          "sanity: the worker really is ok")
+
+    git(repo, "merge", "-q", "--ff-only", "sol/solo")   # deterministic integration
+
+    wt = root / ".sol-worktrees" / "repo" / "solo"
+    # Unrelated uncommitted edit left in the worktree -- e.g. a reviewer poking
+    # around, or a leftover build artifact -- with nothing to do with the
+    # worker's own committed work.
+    (wt / "scratch-notes.txt").write_text("someone was looking at this\n")
+    dirty = subprocess.run(["git", "status", "--porcelain"], cwd=wt,
+                            capture_output=True, text=True, check=False).stdout
+    check(dirty.strip() != "", "sanity: the worktree really is dirty before --cleanup runs")
+
+    r = run(repo, bin_dir, "--cleanup", str(run_dir))
+    check(r.returncode == 0, f"--cleanup exits 0 (stderr: {r.stderr[:200]})")
+    check(wt.is_dir(),
+          "does NOT force-remove an integrated worker's worktree while it has "
+          "unrelated uncommitted edits")
+    check(git(repo, "branch", "--list", "sol/solo") != "",
+          "does NOT delete an integrated worker's branch while its worktree is dirty")
+    check("sol/solo" in r.stdout,
+          f"names the dirty-but-integrated worker on stdout (stdout: {r.stdout!r})")
+
+print("--cleanup: a failed-run worker with a CLEAN worktree is still kept -- status, "
+      "not just worktree cleanliness, gates removal")
+with tempfile.TemporaryDirectory() as tmp:
+    root = pathlib.Path(tmp)
+    bin_dir = root / "bin"
+    install_fake_codex(bin_dir)
+    repo = make_repo(root / "repo")
+    run_dir = root / "run"
+    write_tasks(run_dir, "broken")
+    env = dict(os.environ)
+    env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
+    env["FAKE_EXIT"] = "1"        # codex itself fails
+    env["FAKE_NOCHANGE"] = "1"    # ...and never touches the worktree
+    r = subprocess.run(["bash", str(SCRIPT), "--workers", "1", str(run_dir)],
+                        cwd=repo, capture_output=True, text=True, check=False, env=env)
+    check(r.returncode == 1, f"a failing worker fails the run (stderr: {r.stderr[:200]})")
+    check((run_dir / "workers" / "broken" / "status").read_text().strip() == "failed-run",
+          "sanity: the worker really is failed-run")
+
+    wt = root / ".sol-worktrees" / "repo" / "broken"
+    dirty = subprocess.run(["git", "status", "--porcelain"], cwd=wt,
+                            capture_output=True, text=True, check=False).stdout
+    check(dirty.strip() == "",
+          "sanity: the worktree really is clean (codex never wrote anything) -- "
+          "so only the status gate, not worktree dirtiness, can protect this worker")
+    check(git(repo, "rev-parse", "sol/broken") == git(repo, "rev-parse", "main"),
+          "sanity: the branch sits exactly at base, same as a failed-commit worker, "
+          "so it also looks trivially integrated by ancestry alone")
+
+    r = run(repo, bin_dir, "--cleanup", str(run_dir))
+    check(r.returncode == 0, f"--cleanup exits 0 (stderr: {r.stderr[:200]})")
+    check(wt.is_dir(),
+          "does NOT remove a failed-run worker's worktree just because it "
+          "happens to be clean and trivially integrated")
+    check(git(repo, "branch", "--list", "sol/broken") != "",
+          "does NOT delete a failed-run worker's branch just because its "
+          "worktree happens to be clean")
+    check("sol/broken" in r.stdout,
+          f"names the failed-run worker on stdout (stdout: {r.stdout!r})")
+
+print("--cleanup: a kept line never prints a worktree path that no longer exists")
+with tempfile.TemporaryDirectory() as tmp:
+    root = pathlib.Path(tmp)
+    bin_dir = root / "bin"
+    install_fake_codex(bin_dir)
+    repo = make_repo(root / "repo")
+    run_dir = root / "run"
+    write_tasks(run_dir, "vanished")
+    r = run(repo, bin_dir, "--workers", "1", str(run_dir))
+    check(r.returncode == 0, f"launch exits 0 (stderr: {r.stderr[:200]})")
+
+    wt = root / ".sol-worktrees" / "repo" / "vanished"
+    shutil.rmtree(wt)   # deleted by hand, bypassing git -- branch sol/vanished survives
+
+    r = run(repo, bin_dir, "--cleanup", str(run_dir))
+    check(r.returncode == 0, f"--cleanup exits 0 (stderr: {r.stderr[:200]})")
+    check(str(wt) not in r.stdout,
+          f"never prints the path of a worktree that was removed by hand "
+          f"(stdout: {r.stdout!r})")
+    check("sol/vanished" in r.stdout,
+          f"still names the branch even though its worktree is gone "
+          f"(stdout: {r.stdout!r})")
+    check("already removed" in r.stdout,
+          f"says the worktree is already gone rather than staying silent about it "
           f"(stdout: {r.stdout!r})")
 
 print()

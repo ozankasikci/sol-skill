@@ -441,7 +441,7 @@ cleanup_slugs() {
 # doubt (branch missing, removal partially failing) this errs toward keeping
 # and reporting rather than silently discarding.
 cleanup_run() {
-  local base slug wt rm_ok br_ok d
+  local base slug wt rm_ok br_ok d wt_dirty removable
   base="$(cut -f1 "$RUN_DIR/base")"
   while read -r slug; do
     [ -n "$slug" ] || continue
@@ -462,7 +462,21 @@ cleanup_run() {
       continue
     fi
 
-    if branch_integrated "$base" "sol/$slug"; then
+    # Integration is necessary but NOT sufficient. A failed-commit worker's
+    # branch sits at base because nothing was ever committed, so it looks
+    # trivially integrated while its real work is staged-but-uncommitted in the
+    # worktree. Removing it destroys that work silently and unrecoverably.
+    # Require all three: a terminal status that means success, a clean
+    # worktree, and proven integration. Anything else is kept and named.
+    wt_dirty=0
+    [ -n "$(git -C "$wt" status --porcelain 2>/dev/null)" ] && wt_dirty=1
+    case "$(cat "$OUT_DIR/$slug/status" 2>/dev/null || echo unknown)" in
+      ok|no-changes) removable=1 ;;
+      *)             removable=0 ;;
+    esac
+
+    if [ "$removable" -eq 1 ] && [ "$wt_dirty" -eq 0 ] \
+       && branch_integrated "$base" "sol/$slug"; then
       rm_ok=1; br_ok=1
       git worktree remove --force "$wt" >/dev/null 2>&1 || rm_ok=0
       git branch -q -D "sol/$slug" >/dev/null 2>&1 || br_ok=0
@@ -482,8 +496,12 @@ cleanup_run() {
           "$([ "$br_ok" -eq 1 ] && echo yes || echo no)"
       fi
     else
-      printf 'kept: sol/%s %s (%s)\n' \
-        "$slug" "$wt" "$(cat "$OUT_DIR/$slug/status" 2>/dev/null || echo unmerged)"
+      # Never print a path that is not there: the worktree may have been removed
+      # by hand while the branch survived.
+      printf 'kept: sol/%s %s (%s%s)\n' "$slug" \
+        "$([ -d "$wt" ] && printf '%s' "$wt" || printf '(worktree already removed)')" \
+        "$(cat "$OUT_DIR/$slug/status" 2>/dev/null || echo unmerged)" \
+        "$([ "$wt_dirty" -eq 1 ] && printf ', uncommitted work in the worktree')"
     fi
   done < <(cleanup_slugs)
   git worktree prune
