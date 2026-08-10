@@ -196,7 +196,7 @@ with tempfile.TemporaryDirectory() as tmp:
     check(r.returncode == 2, "exit 2 outside a git work tree")
 
     repo = make_repo(root / "repo")
-    run_dir = repo / "run"
+    run_dir = root / "run"
 
     # missing tasks dir
     run_dir.mkdir()
@@ -270,7 +270,8 @@ WORKERS=""
 RUN_DIR=""
 while [ $# -gt 0 ]; do
   case "$1" in
-    --workers) WORKERS="${2:-}"; shift 2 ;;
+    --workers) [ $# -ge 2 ] || die "--workers requires a value"
+               WORKERS="$2"; shift 2 ;;
     --wait)    MODE="wait";    shift ;;
     --resume)  MODE="resume";  shift ;;
     --cleanup) MODE="cleanup"; shift ;;
@@ -376,7 +377,7 @@ with tempfile.TemporaryDirectory() as tmp:
     bin_dir = root / "bin"
     install_fake_codex(bin_dir)
     repo = make_repo(root / "repo")
-    run_dir = repo / "run"
+    run_dir = root / "run"
     write_tasks(run_dir, "alpha", "beta")
 
     wt_root = root / ".sol-worktrees" / "repo"
@@ -408,7 +409,7 @@ with tempfile.TemporaryDirectory() as tmp:
     bin_dir = root / "bin"
     install_fake_codex(bin_dir)
     repo = make_repo(root / "repo")
-    run_dir = repo / "run"
+    run_dir = root / "run"
     write_tasks(run_dir, "alpha")
     env = dict(os.environ)
     env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
@@ -422,7 +423,7 @@ with tempfile.TemporaryDirectory() as tmp:
     check(marker.is_file(), "SOL_WORKTREE_SETUP runs inside the worktree")
 
     env["SOL_WORKTREE_SETUP"] = "exit 3"
-    run_dir2 = repo / "run2"
+    run_dir2 = root / "run2"
     write_tasks(run_dir2, "gamma")
     r = subprocess.run(
         ["bash", str(SCRIPT), "--workers", "1", "--dry-run", str(run_dir2)],
@@ -565,7 +566,7 @@ with tempfile.TemporaryDirectory() as tmp:
     bin_dir = root / "bin"
     install_fake_codex(bin_dir)
     repo = make_repo(root / "repo")
-    run_dir = repo / "run"
+    run_dir = root / "run"
     write_tasks(run_dir, "alpha", "beta")
 
     r = run(repo, bin_dir, "--workers", "2", str(run_dir))
@@ -585,7 +586,7 @@ with tempfile.TemporaryDirectory() as tmp:
 
     # workers really are concurrent: two 2s workers finish in well under 4s
     repo2 = make_repo(root / "repo2")
-    run_dir2 = repo2 / "run"
+    run_dir2 = root / "run2"
     write_tasks(run_dir2, "one", "two")
     env = dict(os.environ)
     env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
@@ -606,7 +607,7 @@ with tempfile.TemporaryDirectory() as tmp:
     bin_dir = root / "bin"
     install_fake_codex(bin_dir)
     repo = make_repo(root / "repo")
-    run_dir = repo / "run"
+    run_dir = root / "run"
     write_tasks(run_dir, "alpha")
     env = dict(os.environ)
     env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
@@ -740,7 +741,7 @@ with tempfile.TemporaryDirectory() as tmp:
     bin_dir = root / "bin"
     install_fake_codex(bin_dir)
     repo = make_repo(root / "repo")
-    run_dir = repo / "run"
+    run_dir = root / "run"
     write_tasks(run_dir, "alpha", "beta")
 
     r = run(repo, bin_dir, "--workers", "2", str(run_dir))
@@ -772,7 +773,7 @@ with tempfile.TemporaryDirectory() as tmp:
     bin_dir = root / "bin"
     install_fake_codex(bin_dir)
     repo = make_repo(root / "repo")
-    run_dir = repo / "run"
+    run_dir = root / "run"
     write_tasks(run_dir, "empty")
     env = dict(os.environ)
     env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
@@ -784,7 +785,7 @@ with tempfile.TemporaryDirectory() as tmp:
           "empty event log is failed-launch, not success")
 
     repo2 = make_repo(root / "repo2")
-    run_dir2 = repo2 / "run"
+    run_dir2 = root / "run2"
     write_tasks(run_dir2, "quiet")
     env2 = dict(os.environ)
     env2["PATH"] = f"{bin_dir}{os.pathsep}{env2['PATH']}"
@@ -954,7 +955,7 @@ with tempfile.TemporaryDirectory() as tmp:
     bin_dir = root / "bin"
     install_fake_codex(bin_dir)
     repo = make_repo(root / "repo")
-    run_dir = repo / "run"
+    run_dir = root / "run"
     write_tasks(run_dir, "slow")
 
     env = dict(os.environ)
@@ -1070,7 +1071,7 @@ with tempfile.TemporaryDirectory() as tmp:
     bin_dir = root / "bin"
     install_fake_codex(bin_dir)
     repo = make_repo(root / "repo")
-    run_dir = repo / "run"
+    run_dir = root / "run"
     write_tasks(run_dir, "alpha", "beta")
     run(repo, bin_dir, "--workers", "2", str(run_dir))
 
@@ -1211,7 +1212,7 @@ with tempfile.TemporaryDirectory() as tmp:
     bin_dir = root / "bin"
     install_fake_codex(bin_dir)
     repo = make_repo(root / "repo")
-    run_dir = repo / "run"
+    run_dir = root / "run"
     write_tasks(run_dir, "merged", "kept")
     run(repo, bin_dir, "--workers", "2", str(run_dir))
 
