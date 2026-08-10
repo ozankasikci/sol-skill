@@ -452,6 +452,67 @@ with tempfile.TemporaryDirectory() as tmp:
             proc.kill()
             proc.communicate()
 
+print("summary")
+with tempfile.TemporaryDirectory() as tmp:
+    root = pathlib.Path(tmp)
+    bin_dir = root / "bin"
+    install_fake_codex(bin_dir)
+    repo = make_repo(root / "repo")
+    run_dir = root / "run"
+    write_tasks(run_dir, "alpha", "beta")
+
+    r = run(repo, bin_dir, "--workers", "2", str(run_dir))
+    check(r.returncode == 0, "run exits 0")
+
+    summary = json.loads((run_dir / "summary.json").read_text())
+    check(summary["base_branch"] == "main", "summary records base_branch")
+    check(len(summary["workers"]) == 2, "summary has one entry per worker")
+    check([w["slug"] for w in summary["workers"]] == ["alpha", "beta"],
+          "workers are in task order, not completion order")
+
+    alpha = summary["workers"][0]
+    check(alpha["status"] == "ok", "clean worker is status ok")
+    check(alpha["branch"] == "sol/alpha", "records the branch")
+    check(alpha["session_id"] == "019f-alpha", "extracts thread_id as session_id")
+    check(alpha["files_changed"] == ["alpha.txt"], "records changed files")
+    check(len(alpha["commit"]) >= 7, "records the commit sha")
+
+    # exactly one commit on the branch, and the base branch is untouched
+    log = git(repo, "log", "--oneline", "main..sol/alpha")
+    check(len(log.splitlines()) == 1, "exactly one commit per branch")
+    check(git(repo, "rev-parse", "main") == summary["base_sha"], "base branch untouched")
+    check((run_dir / "workers" / "alpha" / "session-id").read_text().strip() == "019f-alpha",
+          "session-id file written for --resume")
+
+print("summary: failure statuses")
+with tempfile.TemporaryDirectory() as tmp:
+    root = pathlib.Path(tmp)
+    bin_dir = root / "bin"
+    install_fake_codex(bin_dir)
+    repo = make_repo(root / "repo")
+    run_dir = root / "run"
+    write_tasks(run_dir, "empty")
+    env = dict(os.environ)
+    env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
+    env["FAKE_EMPTY"] = "1"
+    subprocess.run(["bash", str(SCRIPT), "--workers", "1", str(run_dir)],
+                   cwd=repo, capture_output=True, text=True, check=False, env=env)
+    s = json.loads((run_dir / "summary.json").read_text())
+    check(s["workers"][0]["status"] == "failed-launch",
+          "empty event log is failed-launch, not success")
+
+    repo2 = make_repo(root / "repo2")
+    run_dir2 = root / "run2"
+    write_tasks(run_dir2, "quiet")
+    env2 = dict(os.environ)
+    env2["PATH"] = f"{bin_dir}{os.pathsep}{env2['PATH']}"
+    env2["FAKE_NOCHANGE"] = "1"
+    subprocess.run(["bash", str(SCRIPT), "--workers", "1", str(run_dir2)],
+                   cwd=repo2, capture_output=True, text=True, check=False, env=env2)
+    s = json.loads((run_dir2 / "summary.json").read_text())
+    check(s["workers"][0]["status"] == "no-changes", "a worker that changed nothing is no-changes")
+    check(s["workers"][0]["commit"] == "", "no-changes worker has no commit")
+
 print()
 if failures:
     print(f"{len(failures)} check(s) failed:")

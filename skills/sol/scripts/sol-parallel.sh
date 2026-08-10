@@ -176,6 +176,101 @@ launch_workers() {
 worker_slugs() { cut -f1 "$RUN_DIR/pids"; }
 pid_of() { awk -F'\t' -v s="$1" '$1 == s { print $2 }' "$RUN_DIR/pids"; }
 
+post_process() {
+  local i slug wt w code status session commit files
+  for i in "${!SLUGS[@]}"; do
+    slug="${SLUGS[i]}"; wt="${WORKTREES[i]}"; w="$OUT_DIR/$slug"
+
+    if [ -f "$w/status" ] && [ "$(cat "$w/status")" = "failed-setup" ]; then
+      continue
+    fi
+
+    code="$(cat "$w/exit-code" 2>/dev/null || echo 1)"
+    session=""; commit=""; files=""
+
+    if [ ! -s "$w/events.jsonl" ]; then
+      status="failed-launch"
+    else
+      session="$(head -1 "$w/events.jsonl" \
+        | python3 -c 'import json,sys; print(json.loads(sys.stdin.readline() or "{}").get("thread_id",""))' \
+        2>/dev/null)"
+      printf '%s\n' "$session" > "$w/session-id"
+      if [ "$code" = "124" ]; then
+        status="timed-out"
+      elif [ "$code" != "0" ]; then
+        status="failed-run"
+      elif [ -z "$(git -C "$wt" status --porcelain)" ]; then
+        status="no-changes"
+      else
+        status="ok"
+      fi
+    fi
+
+    if [ "$status" = "ok" ]; then
+      files="$(git -C "$wt" status --porcelain | sed 's/^...//')"
+      git -C "$wt" add -A >/dev/null 2>&1
+      git -C "$wt" commit -q -m "sol: $slug" >/dev/null 2>&1
+      commit="$(git -C "$wt" rev-parse HEAD)"
+    fi
+
+    if [ -f "$w/started-at" ]; then
+      printf '%s\n' "$(( $(date +%s) - $(cat "$w/started-at") ))" > "$w/elapsed"
+    fi
+
+    printf '%s\n' "$status" > "$w/status"
+    printf '%s\n' "$files" > "$w/files-changed"
+    printf '%s\n' "$commit" > "$w/commit"
+  done
+}
+
+write_summary() {
+  RUN_DIR="$RUN_DIR" OUT_DIR="$OUT_DIR" \
+  SLUG_LIST="$(printf '%s\n' "${SLUGS[@]}")" \
+  WT_LIST="$(printf '%s\n' "${WORKTREES[@]}")" \
+  BRIEF_LIST="$(printf '%s\n' "${BRIEF_OF[@]}")" \
+  python3 - <<'PY'
+import json, os, pathlib
+
+run_dir = pathlib.Path(os.environ["RUN_DIR"])
+out_dir = pathlib.Path(os.environ["OUT_DIR"])
+slugs = os.environ["SLUG_LIST"].split("\n")
+wts = os.environ["WT_LIST"].split("\n")
+briefs = os.environ["BRIEF_LIST"].split("\n")
+
+def read(p, default=""):
+    try:
+        return p.read_text().strip()
+    except OSError:
+        return default
+
+base_branch, _, base_sha = read(run_dir / "base").partition("\t")
+workers = []
+for slug, wt, brief in zip(slugs, wts, briefs):
+    w = out_dir / slug
+    started = read(w / "started-at")
+    files = [f for f in read(w / "files-changed").split("\n") if f]
+    workers.append({
+        "slug": slug,
+        "branch": f"sol/{slug}",
+        "worktree": wt,
+        "brief": brief,
+        "status": read(w / "status", "failed-launch") or "failed-launch",
+        "exit_code": int(read(w / "exit-code") or 1),
+        "session_id": read(w / "session-id"),
+        "commit": read(w / "commit"),
+        "files_changed": files,
+        "elapsed_seconds": int(read(w / "elapsed") or 0),
+        "events_path": str(w / "events.jsonl"),
+        "report_path": str(w / "report.md"),
+        "stderr_path": str(w / "stderr.txt"),
+    })
+
+(run_dir / "summary.json").write_text(json.dumps(
+    {"base_branch": base_branch, "base_sha": base_sha, "workers": workers},
+    indent=2) + "\n")
+PY
+}
+
 wait_for_workers() {
   local block="$1" slug pid started now live
   while :; do
@@ -222,6 +317,8 @@ if [ "$MODE" = "launch" ]; then
   [ "$DRY_RUN" -eq 1 ] && exit "$setup_status"
   launch_workers
   wait_for_workers 1
+  post_process
+  write_summary
 fi
 
 # Seed from create_worktrees: a worker whose bootstrap failed is never launched
