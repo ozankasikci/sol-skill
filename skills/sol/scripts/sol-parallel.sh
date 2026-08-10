@@ -196,7 +196,13 @@ wait_for_workers() {
         fi
         live=$((live + 1))
       else
-        # gone without recording an exit code: killed or interrupted
+        # Gone without recording an exit code: killed or interrupted. The
+        # wrapper may have been killed alone (an operator's `kill -9`, an OOM
+        # kill), leaving `codex` orphaned — reap the group for the same reason
+        # the timeout branch does. Residual risk: if the pid has been recycled
+        # since we recorded it, this signals an unrelated group; the window is
+        # small and the alternative is a worker that runs unobserved forever.
+        kill -9 -- -"$pid" 2>/dev/null
         printf '137\n' > "$OUT_DIR/$slug/exit-code"
       fi
     done < <(worker_slugs)
@@ -218,7 +224,10 @@ if [ "$MODE" = "launch" ]; then
   wait_for_workers 1
 fi
 
-run_status=0
+# Seed from create_worktrees: a worker whose bootstrap failed is never launched
+# and so never appears in `pids`, but the run still failed. Starting at 0 here
+# silently reported success whenever setup failed outside --dry-run.
+run_status="${setup_status:-0}"
 while read -r slug; do
   [ -n "$slug" ] || continue
   [ "$(cat "$OUT_DIR/$slug/exit-code" 2>/dev/null || echo 1)" = "0" ] || run_status=1

@@ -266,6 +266,21 @@ with tempfile.TemporaryDirectory() as tmp:
     check(r.returncode == 1, "a failing setup hook fails that worker")
     check("failed-setup" in (r.stdout + r.stderr), "reports failed-setup")
 
+    # Same failing hook, but without --dry-run: create_worktrees's failure
+    # must not be dropped once the run proceeds past worktree setup. The
+    # failed worker never lands in `pids` (launch_workers skips it), so the
+    # final status loop -- which only walks `pids` -- has nothing to see it
+    # in; the run's exit code has to come from create_worktrees's own status.
+    run_dir3 = root / "run3"
+    write_tasks(run_dir3, "delta")
+    r = subprocess.run(
+        ["bash", str(SCRIPT), "--workers", "1", str(run_dir3)],
+        cwd=repo, capture_output=True, text=True, check=False, env=env,
+    )
+    check(r.returncode == 1,
+          "a failing setup hook fails the whole run even without --dry-run")
+    check("failed-setup" in (r.stdout + r.stderr), "reports failed-setup (non-dry-run)")
+
 print("launch")
 with tempfile.TemporaryDirectory() as tmp:
     root = pathlib.Path(tmp)
@@ -373,6 +388,69 @@ with tempfile.TemporaryDirectory() as tmp:
     check(stray.returncode == 1,
           f"no stray codex/sleep descendant survives the timeout kill "
           f"(pgrep exit {stray.returncode}, found: {stray.stdout.strip()!r})")
+
+print("worker killed without recording an exit code")
+with tempfile.TemporaryDirectory() as tmp:
+    root = pathlib.Path(tmp)
+    bin_dir = root / "bin"
+    install_fake_codex(bin_dir)
+    repo = make_repo(root / "repo")
+    run_dir = root / "run"
+    write_tasks(run_dir, "zombie")
+    env = dict(os.environ)
+    env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
+    env.pop("SOL_MAX_WORKERS", None)
+    env.pop("SOL_WORKTREE_SETUP", None)
+    env["FAKE_SLEEP"] = "30"
+
+    import signal
+    import time
+
+    # Launch in the background so we can reach in and kill only the wrapper
+    # pid ourselves -- reproducing an operator's `kill -9` or an OOM kill that
+    # lands on just that one process, leaving codex an orphan unless the
+    # "gone without an exit-code" branch reaps its whole process group.
+    proc = subprocess.Popen(
+        ["bash", str(SCRIPT), "--workers", "1", str(run_dir)],
+        cwd=repo, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env,
+    )
+    try:
+        pids_file = run_dir / "pids"
+        deadline = time.time() + 10
+        while time.time() < deadline and not (
+            pids_file.exists() and pids_file.stat().st_size > 0
+        ):
+            time.sleep(0.1)
+        check(pids_file.exists() and pids_file.stat().st_size > 0,
+              "pids file appears before we intervene")
+        wrapper_pid = int(pids_file.read_text().strip().splitlines()[0].split("\t")[1])
+
+        os.kill(wrapper_pid, signal.SIGKILL)   # the wrapper only, not its group
+
+        try:
+            proc.wait(timeout=20)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.communicate()
+            check(False, "a worker killed without recording an exit code makes the run exit 1 (timed out instead)")
+            check(False, "records exit code 137 for a worker killed without an exit code (timed out instead)")
+            check(False, "no stray codex/sleep descendant survives an externally killed wrapper (timed out instead)")
+        else:
+            check(proc.returncode == 1,
+                  "a worker killed without recording an exit code makes the run exit 1")
+            check((run_dir / "workers" / "zombie" / "exit-code").read_text().strip() == "137",
+                  "records exit code 137 for a worker killed without an exit code")
+            time.sleep(1)
+            stray = subprocess.run(
+                ["pgrep", "-f", str(root)], capture_output=True, text=True, check=False
+            )
+            check(stray.returncode == 1,
+                  f"no stray codex/sleep descendant survives an externally killed wrapper "
+                  f"(pgrep exit {stray.returncode}, found: {stray.stdout.strip()!r})")
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.communicate()
 
 print()
 if failures:
