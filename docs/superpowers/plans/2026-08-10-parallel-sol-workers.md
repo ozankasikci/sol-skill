@@ -748,7 +748,7 @@ while read -r slug; do
     ok|no-changes) ;;
     *) run_status=1 ;;
   esac
-done < <(worker_slugs)
+done < <(roster)
 exit "$run_status"
 ```
 
@@ -1205,6 +1205,11 @@ resume_workers() {
 `resume_workers` reads the roster from `pids.all` (via `roster`) but rewrites `pids` to
 only the resumed workers, so `wait_for_workers` blocks on exactly those while
 `rehydrate`/`post_process`/`write_summary` still cover every worker in the run.
+
+The final exit-code classification loop must iterate `roster` too, for the same reason:
+after a resume, `pids` holds only the corrected workers, so classifying from it would
+let a run exit 0 while a *different* worker sat in `failed-run`. That is the same
+detected-but-not-propagated failure this plan has already shipped three times.
 
 `resume_workers` rewrites `pids` to only the resumed workers, so `wait_for_workers`
 blocks on exactly those. It reads the full roster from `pids.all`, which the launch
