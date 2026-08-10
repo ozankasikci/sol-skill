@@ -406,13 +406,42 @@ wait_for_workers() {
   done
 }
 
+# Integration here means cherry-pick, which produces a commit with a NEW sha and
+# an identical patch. Ancestry therefore reports genuinely integrated work as
+# unmerged, and only coincides when the cherry-pick lands in the same second as
+# the original commit — which is why a same-second test passed and real use would
+# not have. `git cherry` marks '+' any commit whose patch is not upstream.
+branch_integrated() {
+  local base="$1" branch="$2" unmerged
+  git show-ref --verify --quiet "refs/heads/$branch" || return 1
+  git merge-base --is-ancestor "$branch" "$base" 2>/dev/null && return 0
+  unmerged="$(git cherry "$base" "$branch" 2>/dev/null | grep -c '^+' || true)"
+  [ "${unmerged:-1}" = "0" ]
+}
+
+# Every worker directory the run ever created, not just roster()'s
+# pids.all-derived list. create_worktrees creates the worktree and branch for
+# a failed-setup worker before bootstrap runs, but launch_workers never adds
+# a failed-setup slug to pids/pids.all -- it was never launched. roster()
+# alone would make that worker's real branch and worktree permanently
+# invisible to --cleanup: not reported as kept, not removed, just silently
+# unreachable forever. Every worker directory under OUT_DIR is a strict
+# superset of roster(), so walking it covers both without touching roster()'s
+# own contract (used elsewhere for --resume/--wait bookkeeping).
+cleanup_slugs() {
+  local d
+  for d in "$OUT_DIR"/*/; do
+    [ -d "$d" ] && basename "$d"
+  done | sort -u
+}
+
 # Removes the worktree and branch for every worker whose branch is fully
 # merged into base; prints one `kept:` line per survivor so nothing a worker
 # produced is ever stranded without the caller being told it exists. When in
 # doubt (branch missing, removal partially failing) this errs toward keeping
 # and reporting rather than silently discarding.
 cleanup_run() {
-  local base slug wt rm_ok br_ok
+  local base slug wt rm_ok br_ok d
   base="$(cut -f1 "$RUN_DIR/base")"
   while read -r slug; do
     [ -n "$slug" ] || continue
@@ -433,7 +462,7 @@ cleanup_run() {
       continue
     fi
 
-    if git merge-base --is-ancestor "sol/$slug" "$base" 2>/dev/null; then
+    if branch_integrated "$base" "sol/$slug"; then
       rm_ok=1; br_ok=1
       git worktree remove --force "$wt" >/dev/null 2>&1 || rm_ok=0
       git branch -q -D "sol/$slug" >/dev/null 2>&1 || br_ok=0
@@ -456,7 +485,7 @@ cleanup_run() {
       printf 'kept: sol/%s %s (%s)\n' \
         "$slug" "$wt" "$(cat "$OUT_DIR/$slug/status" 2>/dev/null || echo unmerged)"
     fi
-  done < <(roster)
+  done < <(cleanup_slugs)
   git worktree prune
 }
 

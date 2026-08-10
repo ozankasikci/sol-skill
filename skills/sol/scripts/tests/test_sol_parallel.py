@@ -791,7 +791,14 @@ with tempfile.TemporaryDirectory() as tmp:
     write_tasks(run_dir, "merged", "kept")
     run(repo, bin_dir, "--workers", "2", str(run_dir))
 
-    git(repo, "cherry-pick", "sol/merged")     # simulate Claude integrating one branch
+    # Simulate Claude integrating one branch. Amend afterwards so the integrated
+    # commit has a DIFFERENT sha with the same patch — which is what a real
+    # cherry-pick minutes after the original produces. Without the amend this
+    # test only passes when both commits land in the same second.
+    git(repo, "cherry-pick", "sol/merged")
+    git(repo, "commit", "--amend", "--no-edit", "-m", "integrated: merged")
+    check(git(repo, "rev-parse", "HEAD") != git(repo, "rev-parse", "sol/merged"),
+          "the integrated commit has a different sha than the branch")
 
     r = run(repo, bin_dir, "--cleanup", str(run_dir))
     check(r.returncode == 0, f"--cleanup exits 0 (stderr: {r.stderr[:200]})")
@@ -804,6 +811,8 @@ with tempfile.TemporaryDirectory() as tmp:
     check("sol/kept" in r.stdout, "names the surviving branch on stdout")
     check(str(root / ".sol-worktrees" / "repo" / "kept") in r.stdout,
           "names the surviving worktree path")
+    check((run_dir / "workers" / "kept" / "status").read_text().strip() in r.stdout,
+          f"names the surviving worker's status in the kept line (stdout: {r.stdout!r})")
 
     # Running --cleanup again must not misreport the branch it just removed.
     # `git merge-base --is-ancestor` on a branch that no longer exists also
@@ -885,6 +894,52 @@ with tempfile.TemporaryDirectory() as tmp:
           "isn't stranded silently")
 
     subprocess.run(["git", "worktree", "unlock", str(wt)], cwd=repo, check=False)
+
+print("--cleanup: a failed-setup worker is not left invisible to --cleanup")
+with tempfile.TemporaryDirectory() as tmp:
+    root = pathlib.Path(tmp)
+    bin_dir = root / "bin"
+    install_fake_codex(bin_dir)
+    repo = make_repo(root / "repo")
+    run_dir = root / "run"
+    write_tasks(run_dir, "badsetup")
+    env = dict(os.environ)
+    env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
+    env["SOL_WORKTREE_SETUP"] = "exit 3"
+    r = subprocess.run(["bash", str(SCRIPT), "--workers", "1", str(run_dir)],
+                        cwd=repo, capture_output=True, text=True, check=False, env=env)
+    check(r.returncode == 1, f"a failing setup hook fails the launch (stderr: {r.stderr[:200]})")
+    check((run_dir / "workers" / "badsetup" / "status").read_text().strip() == "failed-setup",
+          "sanity: the worker really is failed-setup")
+
+    # create_worktrees creates the branch and worktree for a failed-setup
+    # worker BEFORE bootstrap runs, so both are real -- but launch_workers
+    # never adds a failed-setup slug to pids/pids.all (it was never
+    # launched), so roster() alone would never see it. Without walking
+    # OUT_DIR directly, --cleanup would silently skip this worker forever:
+    # no "kept" line, no removal, just invisible.
+    check(git(repo, "branch", "--list", "sol/badsetup") != "",
+          "sanity: the failed-setup worker really does have a real branch")
+    wt = root / ".sol-worktrees" / "repo" / "badsetup"
+    check(wt.is_dir(), "sanity: the failed-setup worker really does have a real worktree")
+    pids_all = (run_dir / "pids.all").read_text()
+    check("badsetup" not in pids_all,
+          "sanity: pids.all really does exclude the failed-setup worker "
+          f"(pids.all: {pids_all!r})")
+
+    r = run(repo, bin_dir, "--cleanup", str(run_dir))
+    check(r.returncode == 0, f"--cleanup exits 0 on a failed-setup-only run "
+          f"(stderr: {r.stderr[:200]})")
+    # A failed-setup worker never ran codex and so never committed: its branch
+    # is exactly base, trivially integrated, with no real work to strand --
+    # so the honest outcome is removal, not a "kept" line for it.
+    check(not wt.exists(),
+          "removes the worktree of a failed-setup worker with no real work to lose")
+    check(git(repo, "branch", "--list", "sol/badsetup") == "",
+          "deletes the failed-setup worker's branch")
+    check("sol/badsetup" not in r.stdout,
+          f"does not print a kept line for a removed failed-setup worker "
+          f"(stdout: {r.stdout!r})")
 
 print()
 if failures:
