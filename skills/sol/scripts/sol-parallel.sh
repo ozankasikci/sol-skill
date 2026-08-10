@@ -27,7 +27,8 @@ WORKERS=""
 RUN_DIR=""
 while [ $# -gt 0 ]; do
   case "$1" in
-    --workers) WORKERS="${2:-}"; shift 2 ;;
+    --workers) [ $# -ge 2 ] || die "--workers requires a value"
+               WORKERS="$2"; shift 2 ;;
     --wait)    MODE="wait";    shift ;;
     --resume)  MODE="resume";  shift ;;
     --cleanup) MODE="cleanup"; shift ;;

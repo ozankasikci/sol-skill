@@ -93,7 +93,7 @@ def write_tasks(run_dir: pathlib.Path, *slugs: str) -> None:
         (tasks / f"{i:02d}-{slug}.md").write_text(f"<task>do {slug}</task>\n")
 
 
-def run(repo: pathlib.Path, bin_dir: pathlib.Path, *args: str):
+def run(repo: pathlib.Path, bin_dir: pathlib.Path, *args: str, timeout: float | None = None):
     env = dict(os.environ)
     env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
     env.pop("SOL_MAX_WORKERS", None)
@@ -101,6 +101,7 @@ def run(repo: pathlib.Path, bin_dir: pathlib.Path, *args: str):
     return subprocess.run(
         ["bash", str(SCRIPT), *args],
         cwd=repo, capture_output=True, text=True, check=False, env=env,
+        timeout=timeout,
     )
 
 
@@ -119,7 +120,9 @@ with tempfile.TemporaryDirectory() as tmp:
     check(r.returncode == 2, "exit 2 outside a git work tree")
 
     repo = make_repo(root / "repo")
-    run_dir = repo / "run"
+    # run_dir lives outside the repo (as it does in real use, e.g. a scratchpad
+    # dir) so writing briefs into it never dirties the repo's working tree.
+    run_dir = root / "run"
 
     # missing tasks dir
     run_dir.mkdir()
@@ -138,6 +141,21 @@ with tempfile.TemporaryDirectory() as tmp:
     r = run(repo, bin_dir, "--workers", "9", str(run_dir))
     check(r.returncode == 2, "exit 2 when requested workers exceed the ceiling")
     check("SOL_MAX_WORKERS" in r.stderr, "names SOL_MAX_WORKERS when refusing")
+
+    # --workers with no value must not hang: `shift 2` silently no-ops when
+    # only one arg remains (no `set -e`), so a naive parser loops forever.
+    # A `timeout=` here means a regression fails this suite instead of
+    # wedging it.
+    try:
+        r = run(repo, bin_dir, "--workers", timeout=10)
+        check(r.returncode == 2, "exit 2 when --workers has no value")
+    except subprocess.TimeoutExpired:
+        check(False, "exit 2 when --workers has no value (timed out instead of exiting)")
+
+    # clean tree: since run_dir is outside the repo, `git status --porcelain`
+    # is empty here and the script should get past the dirty-tree gate.
+    r = run(repo, bin_dir, "--workers", "2", str(run_dir))
+    check(r.returncode == 0, "clean tree passes precondition checks")
 
     # dirty tree
     (repo / "dirty.txt").write_text("x")
