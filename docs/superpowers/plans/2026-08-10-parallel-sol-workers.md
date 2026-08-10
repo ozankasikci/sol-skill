@@ -247,6 +247,7 @@ Create `skills/sol/scripts/sol-parallel.sh`:
 #
 # Usage:
 #   sol-parallel.sh [--workers N] <run-dir>     launch and wait
+#   sol-parallel.sh --dry-run   <run-dir>       create worktrees only, do not launch
 #   sol-parallel.sh --wait      <run-dir>       re-attach to a running batch
 #   sol-parallel.sh --resume    <run-dir>       send correction briefs
 #   sol-parallel.sh --cleanup   <run-dir>       remove merged worktrees/branches
@@ -380,8 +381,8 @@ with tempfile.TemporaryDirectory() as tmp:
 
     wt_root = root / ".sol-worktrees" / "repo"
 
-    r = run(repo, bin_dir, "--workers", "2", "--no-launch", str(run_dir))
-    check(r.returncode == 0, f"--no-launch exits 0 (stderr: {r.stderr[:200]})")
+    r = run(repo, bin_dir, "--workers", "2", "--dry-run", str(run_dir))
+    check(r.returncode == 0, f"--dry-run exits 0 (stderr: {r.stderr[:200]})")
     check((wt_root / "alpha").is_dir(), "creates a worktree per brief")
     check((wt_root / "beta").is_dir(), "creates the second worktree")
     check("sol/alpha" in git(repo, "branch", "--list", "sol/alpha"),
@@ -397,7 +398,7 @@ with tempfile.TemporaryDirectory() as tmp:
     # a pre-existing branch is a hard stop
     shutil.rmtree(wt_root)
     git(repo, "worktree", "prune")
-    r = run(repo, bin_dir, "--workers", "2", "--no-launch", str(run_dir))
+    r = run(repo, bin_dir, "--workers", "2", "--dry-run", str(run_dir))
     check(r.returncode == 2, "exit 2 when sol/<slug> already exists")
     check("sol/alpha" in r.stderr, "names the colliding branch")
 
@@ -413,7 +414,7 @@ with tempfile.TemporaryDirectory() as tmp:
     env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
     env["SOL_WORKTREE_SETUP"] = "echo ran > setup-marker.txt"
     r = subprocess.run(
-        ["bash", str(SCRIPT), "--workers", "1", "--no-launch", str(run_dir)],
+        ["bash", str(SCRIPT), "--workers", "1", "--dry-run", str(run_dir)],
         cwd=repo, capture_output=True, text=True, check=False, env=env,
     )
     marker = root / ".sol-worktrees" / "repo" / "alpha" / "setup-marker.txt"
@@ -424,31 +425,32 @@ with tempfile.TemporaryDirectory() as tmp:
     run_dir2 = repo / "run2"
     write_tasks(run_dir2, "gamma")
     r = subprocess.run(
-        ["bash", str(SCRIPT), "--workers", "1", "--no-launch", str(run_dir2)],
+        ["bash", str(SCRIPT), "--workers", "1", "--dry-run", str(run_dir2)],
         cwd=repo, capture_output=True, text=True, check=False, env=env,
     )
     check(r.returncode == 1, "a failing setup hook fails that worker")
     check("failed-setup" in (r.stdout + r.stderr), "reports failed-setup")
 ```
 
-`--no-launch` is a test-only seam that stops after bootstrap. It is documented in the
-script's usage block as such, and it is what keeps this task independently testable
-before any launching exists.
+`--dry-run` creates the worktrees and bootstraps them, then stops before launching any
+Codex session — useful on its own for inspecting the setup before spending real runs,
+and it is what keeps this task independently testable before any launching exists.
+Document it in the script's usage block as a first-class mode, not a test hook.
 
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `python3 skills/sol/scripts/tests/test_sol_parallel.py`
-Expected: FAIL — `--no-launch` is an unknown option, so the script exits 2.
+Expected: FAIL — `--dry-run` is an unknown option, so the script exits 2.
 
 - [ ] **Step 3: Write minimal implementation**
 
-In the option loop, add `--no-launch` alongside the other flags:
+In the option loop, add `--dry-run` alongside the other flags:
 
 ```bash
-    --no-launch) NO_LAUNCH=1; shift ;;
+    --dry-run) DRY_RUN=1; shift ;;
 ```
 
-and initialise `NO_LAUNCH=0` next to `MODE="launch"`. Then add, after `preflight_launch`:
+and initialise `DRY_RUN=0` next to `MODE="launch"`. Then add, after `preflight_launch`:
 
 ```bash
 slug_for() {
@@ -517,7 +519,7 @@ Replace the trailing `exit 0` with:
 ```bash
 if [ "$MODE" = "launch" ]; then
   create_worktrees; setup_status=$?
-  if [ "$NO_LAUNCH" -eq 1 ]; then
+  if [ "$DRY_RUN" -eq 1 ]; then
     exit "$setup_status"
   fi
 fi
@@ -687,7 +689,7 @@ Replace the trailing dispatch with:
 ```bash
 if [ "$MODE" = "launch" ]; then
   create_worktrees; setup_status=$?
-  [ "$NO_LAUNCH" -eq 1 ] && exit "$setup_status"
+  [ "$DRY_RUN" -eq 1 ] && exit "$setup_status"
   launch_workers
   wait_for_workers 1
 fi
