@@ -327,6 +327,53 @@ with tempfile.TemporaryDirectory() as tmp:
     check((run_dir / "workers" / "alpha" / "exit-code").read_text().strip() == "2",
           "records the worker's real exit code")
 
+print("timeout backstop")
+with tempfile.TemporaryDirectory() as tmp:
+    root = pathlib.Path(tmp)
+    bin_dir = root / "bin"
+    install_fake_codex(bin_dir)
+    repo = make_repo(root / "repo")
+    run_dir = root / "run"
+    write_tasks(run_dir, "slow")
+    env = dict(os.environ)
+    env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
+    env.pop("SOL_MAX_WORKERS", None)
+    env.pop("SOL_WORKTREE_SETUP", None)
+    env["FAKE_SLEEP"] = "30"
+    env["SOL_WORKER_TIMEOUT"] = "3"
+
+    import time
+    t0 = time.time()
+    try:
+        r = subprocess.run(
+            ["bash", str(SCRIPT), "--workers", "1", str(run_dir)],
+            cwd=repo, capture_output=True, text=True, check=False, env=env,
+            timeout=20,
+        )
+        elapsed = time.time() - t0
+        check(elapsed < 15,
+              f"run terminates promptly instead of waiting out the 30s sleep (took {elapsed:.1f}s)")
+        check(r.returncode == 1, "a timed-out worker makes the run exit 1")
+        check((run_dir / "workers" / "slow" / "exit-code").read_text().strip() == "124",
+              "records exit code 124 for a timed-out worker")
+    except subprocess.TimeoutExpired:
+        check(False, "run terminates promptly instead of waiting out the 30s sleep (timed out instead)")
+        check(False, "a timed-out worker makes the run exit 1 (timed out instead)")
+        check(False, "records exit code 124 for a timed-out worker (timed out instead)")
+
+    # Give any orphaned descendant a moment to show up, then confirm nothing
+    # from this run's process group survives the timeout kill. The marker is
+    # this test's own throwaway tmp dir -- unique per run and present in the
+    # fake codex process's own argv (its -C/-o paths live under it) -- so it
+    # cannot match an unrelated process on the machine.
+    time.sleep(1)
+    stray = subprocess.run(
+        ["pgrep", "-f", str(root)], capture_output=True, text=True, check=False
+    )
+    check(stray.returncode == 1,
+          f"no stray codex/sleep descendant survives the timeout kill "
+          f"(pgrep exit {stray.returncode}, found: {stray.stdout.strip()!r})")
+
 print()
 if failures:
     print(f"{len(failures)} check(s) failed:")

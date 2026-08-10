@@ -20,7 +20,7 @@ set -uo pipefail
 
 MODEL="${SOL_MODEL:-gpt-5.6-sol}"
 EFFORT="${SOL_EFFORT:-xhigh}"
-WORKER_TIMEOUT=1800
+WORKER_TIMEOUT="${SOL_WORKER_TIMEOUT:-1800}"
 
 die() { printf 'sol-parallel: %s\n' "$1" >&2; exit "${2:-2}"; }
 
@@ -150,6 +150,10 @@ create_worktrees() {
 
 launch_workers() {
   local i slug wt brief w pid
+  # Job control puts each background job in its own process group, so the
+  # timeout backstop can signal the whole group. Without it, killing the
+  # wrapper orphans the `codex` process it forked and the backstop is a no-op.
+  set -m
   : > "$RUN_DIR/pids"
   for i in "${!SLUGS[@]}"; do
     slug="${SLUGS[i]}"; wt="${WORKTREES[i]}"; brief="${BRIEF_OF[i]}"
@@ -184,7 +188,9 @@ wait_for_workers() {
         started="$(cat "$OUT_DIR/$slug/started-at" 2>/dev/null || echo 0)"
         now="$(date +%s)"
         if [ "$started" -gt 0 ] && [ $((now - started)) -gt "$WORKER_TIMEOUT" ]; then
-          kill -9 "$pid" 2>/dev/null
+          # Signal the whole process group: the wrapper forked `codex`, so
+          # killing the wrapper alone leaves the real worker running.
+          kill -9 -- -"$pid" 2>/dev/null || kill -9 "$pid" 2>/dev/null
           printf '124\n' > "$OUT_DIR/$slug/exit-code"
           continue
         fi
