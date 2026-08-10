@@ -148,6 +148,58 @@ create_worktrees() {
   return "$status"
 }
 
+launch_workers() {
+  local i slug wt brief w pid
+  : > "$RUN_DIR/pids"
+  for i in "${!SLUGS[@]}"; do
+    slug="${SLUGS[i]}"; wt="${WORKTREES[i]}"; brief="${BRIEF_OF[i]}"
+    w="$OUT_DIR/$slug"
+    [ -f "$w/status" ] && continue        # failed-setup: never launched
+    date +%s > "$w/started-at"
+    nohup bash -c '
+      codex exec --json -m "$1" -c model_reasoning_effort="$2" \
+        -s workspace-write --color never -C "$3" \
+        -o "$4/report.md" - < "$5" \
+        > "$4/events.jsonl" 2> "$4/stderr.txt"
+      printf "%s\n" "$?" > "$4/exit-code"
+    ' _ "$MODEL" "$EFFORT" "$wt" "$w" "$brief" >/dev/null 2>&1 &
+    pid=$!
+    disown "$pid" 2>/dev/null
+    printf '%s\t%s\n' "$slug" "$pid" >> "$RUN_DIR/pids"
+  done
+}
+
+worker_slugs() { cut -f1 "$RUN_DIR/pids"; }
+pid_of() { awk -F'\t' -v s="$1" '$1 == s { print $2 }' "$RUN_DIR/pids"; }
+
+wait_for_workers() {
+  local block="$1" slug pid started now live
+  while :; do
+    live=0
+    while read -r slug; do
+      [ -n "$slug" ] || continue
+      [ -f "$OUT_DIR/$slug/exit-code" ] && continue
+      pid="$(pid_of "$slug")"
+      if kill -0 "$pid" 2>/dev/null; then
+        started="$(cat "$OUT_DIR/$slug/started-at" 2>/dev/null || echo 0)"
+        now="$(date +%s)"
+        if [ "$started" -gt 0 ] && [ $((now - started)) -gt "$WORKER_TIMEOUT" ]; then
+          kill -9 "$pid" 2>/dev/null
+          printf '124\n' > "$OUT_DIR/$slug/exit-code"
+          continue
+        fi
+        live=$((live + 1))
+      else
+        # gone without recording an exit code: killed or interrupted
+        printf '137\n' > "$OUT_DIR/$slug/exit-code"
+      fi
+    done < <(worker_slugs)
+    [ "$live" -eq 0 ] && return 0
+    [ "$block" -eq 1 ] || return 75
+    sleep 2
+  done
+}
+
 case "$MODE" in
   launch)  preflight_launch ;;
   *)       [ -d "$OUT_DIR" ] || die "no run directory to $MODE: $OUT_DIR" ;;
@@ -155,9 +207,14 @@ esac
 
 if [ "$MODE" = "launch" ]; then
   create_worktrees; setup_status=$?
-  if [ "$DRY_RUN" -eq 1 ]; then
-    exit "$setup_status"
-  fi
+  [ "$DRY_RUN" -eq 1 ] && exit "$setup_status"
+  launch_workers
+  wait_for_workers 1
 fi
 
-exit 0
+run_status=0
+while read -r slug; do
+  [ -n "$slug" ] || continue
+  [ "$(cat "$OUT_DIR/$slug/exit-code" 2>/dev/null || echo 1)" = "0" ] || run_status=1
+done < <(worker_slugs)
+exit "$run_status"

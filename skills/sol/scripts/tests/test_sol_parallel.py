@@ -266,6 +266,67 @@ with tempfile.TemporaryDirectory() as tmp:
     check(r.returncode == 1, "a failing setup hook fails that worker")
     check("failed-setup" in (r.stdout + r.stderr), "reports failed-setup")
 
+print("launch")
+with tempfile.TemporaryDirectory() as tmp:
+    root = pathlib.Path(tmp)
+    bin_dir = root / "bin"
+    install_fake_codex(bin_dir)
+    repo = make_repo(root / "repo")
+    run_dir = root / "run"
+    write_tasks(run_dir, "alpha", "beta")
+
+    r = run(repo, bin_dir, "--workers", "2", str(run_dir))
+    check(r.returncode == 0, f"a clean 2-worker run exits 0 (stderr: {r.stderr[:200]})")
+
+    pids = (run_dir / "pids").read_text().strip().splitlines()
+    check(len(pids) == 2, "records one pid per worker")
+    check(all("\t" in line for line in pids), "pids file is slug<TAB>pid")
+
+    for slug in ("alpha", "beta"):
+        w = run_dir / "workers" / slug
+        check((w / "events.jsonl").stat().st_size > 0, f"{slug}: event log is non-empty")
+        check((w / "exit-code").read_text().strip() == "0", f"{slug}: records exit code 0")
+        check((w / "report.md").is_file(), f"{slug}: report written")
+        wt = root / ".sol-worktrees" / "repo" / slug
+        check((wt / f"{slug}.txt").is_file(), f"{slug}: worker wrote into its own worktree")
+
+    # workers really are concurrent: two 2s workers finish in well under 4s
+    repo2 = make_repo(root / "repo2")
+    run_dir2 = root / "run2"
+    write_tasks(run_dir2, "one", "two")
+    env = dict(os.environ)
+    env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
+    env["FAKE_SLEEP"] = "2"
+    import time
+    t0 = time.time()
+    r = subprocess.run(
+        ["bash", str(SCRIPT), "--workers", "2", str(run_dir2)],
+        cwd=repo2, capture_output=True, text=True, check=False, env=env,
+    )
+    elapsed = time.time() - t0
+    check(r.returncode == 0, "concurrent run exits 0")
+    check(elapsed < 3.5, f"two 2s workers ran concurrently (took {elapsed:.1f}s)")
+
+print("launch failures")
+with tempfile.TemporaryDirectory() as tmp:
+    root = pathlib.Path(tmp)
+    bin_dir = root / "bin"
+    install_fake_codex(bin_dir)
+    repo = make_repo(root / "repo")
+    run_dir = root / "run"
+    write_tasks(run_dir, "alpha")
+    env = dict(os.environ)
+    env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
+    env["FAKE_EMPTY"] = "1"
+    env["FAKE_EXIT"] = "2"
+    r = subprocess.run(
+        ["bash", str(SCRIPT), "--workers", "1", str(run_dir)],
+        cwd=repo, capture_output=True, text=True, check=False, env=env,
+    )
+    check(r.returncode == 1, "a failed worker makes the run exit 1")
+    check((run_dir / "workers" / "alpha" / "exit-code").read_text().strip() == "2",
+          "records the worker's real exit code")
+
 print()
 if failures:
     print(f"{len(failures)} check(s) failed:")
