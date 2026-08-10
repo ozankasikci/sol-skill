@@ -62,6 +62,9 @@ jobs:
       - name: sol-watch tests
         run: python3 skills/sol/scripts/tests/test_sol_watch.py
 
+      - name: sol-parallel tests
+        run: python3 skills/sol/scripts/tests/test_sol_parallel.py
+
       - name: shellcheck
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
