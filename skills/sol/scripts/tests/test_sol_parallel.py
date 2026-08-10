@@ -64,6 +64,7 @@ for arg in "$@"; do
   esac
   prev="$arg"
 done
+[ -n "${FAKE_ARGLOG:-}" ] && printf '%s\n' "$*" >> "$FAKE_ARGLOG"
 cat >/dev/null                      # consume the brief
 slug="$(basename "$(dirname "$out_file")")"
 [ -n "${FAKE_SLEEP:-}" ] && sleep "$FAKE_SLEEP"
@@ -603,6 +604,42 @@ with tempfile.TemporaryDirectory() as tmp:
     check(by_slug["auth"]["brief"].endswith("02-auth.md"),
           "auth worker (suffix of add-auth) gets its own brief, not add-auth's, "
           f"after --wait rehydration (got {by_slug['auth']['brief']!r})")
+
+print("--resume")
+with tempfile.TemporaryDirectory() as tmp:
+    root = pathlib.Path(tmp)
+    bin_dir = root / "bin"
+    install_fake_codex(bin_dir)
+    repo = make_repo(root / "repo")
+    run_dir = root / "run"
+    write_tasks(run_dir, "alpha", "beta")
+    run(repo, bin_dir, "--workers", "2", str(run_dir))
+
+    (run_dir / "workers" / "alpha" / "correction.md").write_text(
+        "alpha.txt:1 — wrong value. Required: 2. `test` must pass.\n")
+
+    arglog = root / "args.log"
+    env = dict(os.environ)
+    env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
+    env["FAKE_ARGLOG"] = str(arglog)
+    r = subprocess.run(["bash", str(SCRIPT), "--resume", str(run_dir)],
+                       cwd=repo, capture_output=True, text=True, check=False, env=env)
+    check(r.returncode == 0, f"--resume exits 0 (stderr: {r.stderr[:200]})")
+
+    args = arglog.read_text()
+    check("resume" in args, "invokes codex exec resume")
+    check("019f-alpha" in args, "resumes by explicit session id")
+    check("--last" not in args, "never uses --last")
+    check(" -s " not in f" {args} ", "passes no -s to resume")
+    check("--color" not in args, "passes no --color to resume")
+    check(" -C " not in f" {args} ", "passes no -C to resume")
+    check("beta" not in args, "does not resume workers without a correction")
+    check(not (run_dir / "workers" / "alpha" / "correction.md").exists(),
+          "consumes correction.md so it cannot be re-sent")
+
+    r = subprocess.run(["bash", str(SCRIPT), "--resume", str(run_dir)],
+                       cwd=repo, capture_output=True, text=True, check=False, env=env)
+    check(r.returncode == 2, "exit 2 when no corrections are pending")
 
 print()
 if failures:

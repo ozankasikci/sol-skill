@@ -174,6 +174,39 @@ launch_workers() {
     disown "$pid" 2>/dev/null
     printf '%s\t%s\n' "$slug" "$pid" >> "$RUN_DIR/pids"
   done
+  cp "$RUN_DIR/pids" "$RUN_DIR/pids.all"
+}
+
+resume_workers() {
+  local slug w pid n pending=0
+  : > "$RUN_DIR/pids"
+  while read -r slug; do
+    [ -n "$slug" ] || continue
+    w="$OUT_DIR/$slug"
+    [ -f "$w/correction.md" ] || continue
+    pending=$((pending + 1))
+    n=1
+    while [ -f "$w/correction-$n.md" ]; do n=$((n + 1)); done
+    mv "$w/correction.md" "$w/correction-$n.md"
+    date +%s > "$w/started-at"
+    # Clear the terminal state. `post_process` skips any worker that already
+    # has a `status` file — the guard that stops a re-attach from downgrading a
+    # committed worker to `no-changes` — so a resumed worker that kept its old
+    # status would be skipped forever and never reclassified.
+    rm -f "$w/exit-code" "$w/status" "$w/files-changed" "$w/commit"
+    nohup bash -c '
+      cd "$3" || exit 2
+      codex exec resume "$6" --json -m "$1" -c model_reasoning_effort="$2" \
+        -o "$4/report.md" "$(cat "$5")" \
+        > "$4/events.jsonl" 2> "$4/stderr.txt"
+      printf "%s\n" "$?" > "$4/exit-code"
+    ' _ "$MODEL" "$EFFORT" "$WORKTREE_ROOT/$slug" "$w" "$w/correction-$n.md" \
+        "$(cat "$w/session-id")" >/dev/null 2>&1 &
+    pid=$!
+    disown "$pid" 2>/dev/null
+    printf '%s\t%s\n' "$slug" "$pid" >> "$RUN_DIR/pids"
+  done < <(roster)
+  [ "$pending" -gt 0 ] || die "no correction.md found in $OUT_DIR/*/"
 }
 
 worker_slugs() { cut -f1 "$RUN_DIR/pids"; }
@@ -228,14 +261,22 @@ post_process() {
         status="timed-out"
       elif [ "$code" != "0" ]; then
         status="failed-run"
-      elif [ -z "$(git -C "$wt" status --porcelain)" ]; then
+      elif [ -z "$(git -C "$wt" status --porcelain)" ] \
+        && [ "$(git -C "$wt" rev-parse HEAD)" = "$(cut -f2 "$RUN_DIR/base")" ]; then
         status="no-changes"
+      elif [ -z "$(git -C "$wt" status --porcelain)" ]; then
+        # Clean tree but the branch has already moved past base: a resumed
+        # worker that committed earlier and made no further edits this round.
+        # There is nothing new to add/commit -- doing so anyway would find
+        # "nothing to commit" and misreport a real "ok" as failed-commit.
+        status="ok"
+        commit="$(git -C "$wt" rev-parse HEAD)"
       else
         status="ok"
       fi
     fi
 
-    if [ "$status" = "ok" ]; then
+    if [ "$status" = "ok" ] && [ -z "$commit" ]; then
       files="$(git -C "$wt" status --porcelain | sed 's/^...//')"
       git -C "$wt" add -A >/dev/null 2>&1
       if git -C "$wt" commit -q -m "sol: $slug" >/dev/null 2>&1; then
@@ -368,6 +409,15 @@ if [ "$MODE" = "launch" ]; then
   write_summary
 fi
 
+if [ "$MODE" = "resume" ]; then
+  [ -f "$RUN_DIR/pids.all" ] || die "no completed run in $RUN_DIR"
+  resume_workers
+  wait_for_workers 1
+  rehydrate
+  post_process
+  write_summary
+fi
+
 # Seed from create_worktrees: a worker whose bootstrap failed is never launched
 # and so never appears in `pids`, but the run still failed. Starting at 0 here
 # silently reported success whenever setup failed outside --dry-run.
@@ -382,5 +432,5 @@ while read -r slug; do
     ok|no-changes) ;;
     *) run_status=1 ;;
   esac
-done < <(worker_slugs)
+done < <(roster)
 exit "$run_status"
