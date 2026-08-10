@@ -336,7 +336,9 @@ reported to the user with the failing output.
 ### Cleanup
 
 After integration: `git worktree remove` each worktree, `git branch -d` each merged
-branch, `git worktree prune`. Branches for failed or unreviewed workers survive and are
+branch, `git worktree prune`. "Merged" is decided by **patch equivalence** (`git
+cherry`), not ancestry — cherry-picking gives the integrated commit a new sha, so an
+ancestry test reports integrated work as unmerged and never cleans anything up. Branches for failed or unreviewed workers survive and are
 **named in the report along with their worktree paths**, so nothing is stranded silently.
 
 ---

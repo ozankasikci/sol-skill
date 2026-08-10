@@ -1308,7 +1308,14 @@ with tempfile.TemporaryDirectory() as tmp:
     write_tasks(run_dir, "merged", "kept")
     run(repo, bin_dir, "--workers", "2", str(run_dir))
 
-    git(repo, "cherry-pick", "sol/merged")     # simulate Claude integrating one branch
+    # Simulate Claude integrating one branch. Amend afterwards so the integrated
+    # commit has a DIFFERENT sha with the same patch — which is what a real
+    # cherry-pick minutes after the original produces. Without the amend this
+    # test only passes when both commits land in the same second.
+    git(repo, "cherry-pick", "sol/merged")
+    git(repo, "commit", "--amend", "--no-edit", "-m", "integrated: merged")
+    check(git(repo, "rev-parse", "HEAD") != git(repo, "rev-parse", "sol/merged"),
+          "the integrated commit has a different sha than the branch")
 
     r = run(repo, bin_dir, "--cleanup", str(run_dir))
     check(r.returncode == 0, f"--cleanup exits 0 (stderr: {r.stderr[:200]})")
@@ -1331,13 +1338,26 @@ Expected: FAIL — `--cleanup` does nothing; both worktrees survive and nothing 
 - [ ] **Step 3: Write minimal implementation**
 
 ```bash
+# Integration here means cherry-pick, which produces a commit with a NEW sha and
+# an identical patch. Ancestry therefore reports genuinely integrated work as
+# unmerged, and only coincides when the cherry-pick lands in the same second as
+# the original commit — which is why a same-second test passed and real use would
+# not have. `git cherry` marks '+' any commit whose patch is not upstream.
+branch_integrated() {
+  local base="$1" branch="$2" unmerged
+  git show-ref --verify --quiet "refs/heads/$branch" || return 1
+  git merge-base --is-ancestor "$branch" "$base" 2>/dev/null && return 0
+  unmerged="$(git cherry "$base" "$branch" 2>/dev/null | grep -c '^+' || true)"
+  [ "${unmerged:-1}" = "0" ]
+}
+
 cleanup_run() {
   local base slug wt
   base="$(cut -f1 "$RUN_DIR/base")"
   while read -r slug; do
     [ -n "$slug" ] || continue
     wt="$WORKTREE_ROOT/$slug"
-    if git merge-base --is-ancestor "sol/$slug" "$base" 2>/dev/null; then
+    if branch_integrated "$base" "sol/$slug"; then
       git worktree remove --force "$wt" >/dev/null 2>&1
       git branch -q -D "sol/$slug" >/dev/null 2>&1
     else
