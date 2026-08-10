@@ -966,9 +966,12 @@ Record elapsed at the end of `post_process`, per worker, before writing status:
     # pre-commit porcelain: the resumed-no-op rung never touches the worktree,
     # and porcelain quotes filenames containing a double quote. This is the
     # branch's whole diff, which is what a reviewer of it wants.
+    # `-z`, not `-c core.quotePath=false`: that setting only stops quoting for
+    # non-ASCII bytes, while git always backslash-escapes a literal double quote
+    # in its default text output. `-z` gives unquoted NUL-delimited names.
     if [ "$status" = "ok" ]; then
-      files="$(git -C "$wt" -c core.quotePath=false diff --name-only \
-        "$(cut -f2 "$RUN_DIR/base")" HEAD)"
+      files="$(git -C "$wt" diff --name-only -z \
+        "$(cut -f2 "$RUN_DIR/base")" HEAD | tr '\0' '\n')"
     fi
 
     if [ -f "$w/started-at" ]; then
