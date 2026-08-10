@@ -888,7 +888,7 @@ post_process() {
       fi
     fi
 
-    if [ "$status" = "ok" ]; then
+    if [ "$status" = "ok" ] && [ -z "$commit" ]; then
       files="$(git -C "$wt" status --porcelain | sed 's/^...//')"
       git -C "$wt" add -A >/dev/null 2>&1
       if git -C "$wt" commit -q -m "sol: $slug" >/dev/null 2>&1; then
@@ -1242,6 +1242,13 @@ moved. Replace the status ladder's clean-tree test with:
       elif [ -z "$(git -C "$wt" status --porcelain)" ] \
         && [ "$(git -C "$wt" rev-parse HEAD)" = "$(cut -f2 "$RUN_DIR/base")" ]; then
         status="no-changes"
+      elif [ -z "$(git -C "$wt" status --porcelain)" ]; then
+        # Clean tree but the branch has already moved past base: a resumed
+        # worker that committed earlier and made no further edits this round.
+        # Committing anyway finds "nothing to commit" and misreports a real
+        # success as failed-commit.
+        status="ok"
+        commit="$(git -C "$wt" rev-parse HEAD)"
 ```
 
 - [ ] **Step 4: Run test to verify it passes**
