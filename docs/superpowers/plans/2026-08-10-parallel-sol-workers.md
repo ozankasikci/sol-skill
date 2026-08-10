@@ -737,7 +737,14 @@ fi
 run_status="${setup_status:-0}"
 while read -r slug; do
   [ -n "$slug" ] || continue
-  [ "$(cat "$OUT_DIR/$slug/exit-code" 2>/dev/null || echo 1)" = "0" ] || run_status=1
+  # Classify from `status`, not from the worker's own exit code. A worker whose
+  # event log is empty exits 0 while having accomplished nothing — reading
+  # exit-code here reported the run as a success for precisely the failure this
+  # script exists to catch.
+  case "$(cat "$OUT_DIR/$slug/status" 2>/dev/null || echo failed-launch)" in
+    ok|no-changes) ;;
+    *) run_status=1 ;;
+  esac
 done < <(worker_slugs)
 exit "$run_status"
 ```
@@ -767,7 +774,7 @@ git commit -m "Launch one codex worker per brief and wait on all of them"
 
 **Interfaces:**
 - Consumes: `exit-code`, `events.jsonl`, worktree paths from Task 3.
-- Produces: `<run-dir>/workers/<slug>/{session-id,status}`; `<run-dir>/summary.json` with the exact schema in the spec. `status` ∈ `ok` · `no-changes` · `failed-launch` · `failed-run` · `failed-setup` · `timed-out`.
+- Produces: `<run-dir>/workers/<slug>/{session-id,status}`; `<run-dir>/summary.json` with the exact schema in the spec. `status` ∈ `ok` · `no-changes` · `failed-launch` · `failed-run` · `failed-setup` · `failed-commit` · `timed-out`.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -881,8 +888,15 @@ post_process() {
     if [ "$status" = "ok" ]; then
       files="$(git -C "$wt" status --porcelain | sed 's/^...//')"
       git -C "$wt" add -A >/dev/null 2>&1
-      git -C "$wt" commit -q -m "sol: $slug" >/dev/null 2>&1
-      commit="$(git -C "$wt" rev-parse HEAD)"
+      if git -C "$wt" commit -q -m "sol: $slug" >/dev/null 2>&1; then
+        commit="$(git -C "$wt" rev-parse HEAD)"
+      else
+        # `rev-parse HEAD` still succeeds when the commit was rejected (a hook,
+        # a bad identity), returning the BASE sha — which looks like a real
+        # commit and reported the worker as ok with its work stranded uncommitted.
+        status="failed-commit"
+        commit=""
+      fi
     fi
 
     printf '%s\n' "$status" > "$w/status"
@@ -1416,7 +1430,7 @@ Create it with these sections, written as instructions to the planner:
    bash <skill-dir>/scripts/sol-parallel.sh --workers N "$SCRATCHPAD/sol-run"
    ```
    If it exits 75 or the tool times out, re-invoke `--wait "$SCRATCHPAD/sol-run"` until it returns 0 or 1. Never launch codex directly in parallel mode.
-6. **Read `summary.json`, never the raw logs** — one entry per worker, `status` ∈ `ok` · `no-changes` · `failed-launch` · `failed-run` · `failed-setup` · `timed-out`. `failed-launch` means codex itself failed: read the tail of that worker's `stderr.txt`. Every non-`ok` worker is named in the report with its status — a task that produced nothing is reported as such, never omitted.
+6. **Read `summary.json`, never the raw logs** — one entry per worker, `status` ∈ `ok` · `no-changes` · `failed-launch` · `failed-run` · `failed-setup` · `failed-commit` · `timed-out`. `failed-launch` means codex itself failed: read the tail of that worker's `stderr.txt`. Every non-`ok` worker is named in the report with its status — a task that produced nothing is reported as such, never omitted.
 7. **Review in task order** — `git diff --stat "$BASE".."sol/<slug>"`, then the full branch diff, to today's phase-3 standard, plus a check that the worker stayed inside its declared file scope.
 8. **Integrate one branch at a time** — `git cherry-pick sol/<slug>` onto the base, then `git -C <worktree> rebase "$BASE"` for every not-yet-reviewed worker. A conflict is evidence the independence premise was wrong for that pair: report it, never auto-resolve.
 9. **Correct** — write the delta to `<run-dir>/workers/<slug>/correction.md` and run `--resume <run-dir>`. Two rounds per worker, counted independently. Never construct a `codex exec resume` command by hand in parallel mode.

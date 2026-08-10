@@ -232,7 +232,8 @@ Each parallel brief carries, in addition to today's blocks:
 ```
 
 `status` is one of `ok`, `no-changes`, `failed-launch` (empty event log), `failed-run`
-(non-zero exit), `failed-setup`, `timed-out`.
+(non-zero exit), `failed-setup`, `failed-commit` (the worktree commit was rejected),
+`timed-out`.
 
 ### Overrunning the tool timeout
 
