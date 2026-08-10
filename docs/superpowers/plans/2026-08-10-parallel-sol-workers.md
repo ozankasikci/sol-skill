@@ -396,24 +396,29 @@ with tempfile.TemporaryDirectory() as tmp:
     base = (run_dir / "base").read_text().split("\t")
     check(base[0] == "main", "records the base branch")
 
-    # a pre-existing branch is a hard stop. Remove both worktrees but keep
-    # branch sol/alpha, so the batch collides on its FIRST brief while `beta`
-    # is the one that must never be created.
+    # a pre-existing branch is a hard stop. Remove both worktrees, keep branch
+    # sol/beta and delete sol/alpha, so the batch collides on its SECOND brief
+    # while `alpha` is the one that must never be created.
+    #
+    # The ordering carries the whole test. `git worktree add -b` fails on its
+    # own when the branch exists, so a collision on the FIRST brief aborts at
+    # iteration 1 with or without the pre-check — the assertions below would
+    # pass against an implementation that has no pre-check at all. Colliding on
+    # the SECOND brief is what discriminates: without a check across the whole
+    # batch before any worktree is created, `alpha` gets created and is left
+    # behind when `beta` fails.
     shutil.rmtree(wt_root)
     git(repo, "worktree", "prune")
-    git(repo, "branch", "-D", "sol/beta")
+    git(repo, "branch", "-D", "sol/alpha")
     r = run(repo, bin_dir, "--workers", "2", "--dry-run", str(run_dir))
     check(r.returncode == 2, "exit 2 when sol/<slug> already exists")
-    check("sol/alpha" in r.stderr, "names the colliding branch")
-    # `git worktree add -b` would fail on its own here, and its stderr even
-    # contains the branch name — so the two checks above pass with the explicit
-    # pre-check deleted. What only the pre-check gives is that NO worktree is
-    # created when any branch in the batch collides. `beta` is the collision;
-    # `alpha` must never have been created.
-    check(not (wt_root / "beta").exists(),
-          "a collision anywhere aborts before creating any worktree")
-    check(git(repo, "branch", "--list", "sol/beta") == "",
-          "a collision anywhere creates no branch")
+    check("sol/beta" in r.stderr, "names the colliding branch")
+    check(not (wt_root / "alpha").exists(),
+          "a collision anywhere aborts before creating any worktree, "
+          "even an earlier non-colliding one")
+    check(git(repo, "branch", "--list", "sol/alpha") == "",
+          "a collision anywhere creates no branch, even for an earlier "
+          "non-colliding brief")
 
 print("worktree setup hook")
 with tempfile.TemporaryDirectory() as tmp:
