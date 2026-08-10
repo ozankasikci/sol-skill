@@ -495,11 +495,12 @@ with tempfile.TemporaryDirectory() as tmp:
     env = dict(os.environ)
     env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
     env["FAKE_EMPTY"] = "1"
-    subprocess.run(["bash", str(SCRIPT), "--workers", "1", str(run_dir)],
-                   cwd=repo, capture_output=True, text=True, check=False, env=env)
+    r = subprocess.run(["bash", str(SCRIPT), "--workers", "1", str(run_dir)],
+                        cwd=repo, capture_output=True, text=True, check=False, env=env)
     s = json.loads((run_dir / "summary.json").read_text())
     check(s["workers"][0]["status"] == "failed-launch",
           "empty event log is failed-launch, not success")
+    check(r.returncode == 1, "a failed-launch worker makes the run exit 1")
 
     repo2 = make_repo(root / "repo2")
     run_dir2 = root / "run2"
@@ -507,11 +508,40 @@ with tempfile.TemporaryDirectory() as tmp:
     env2 = dict(os.environ)
     env2["PATH"] = f"{bin_dir}{os.pathsep}{env2['PATH']}"
     env2["FAKE_NOCHANGE"] = "1"
-    subprocess.run(["bash", str(SCRIPT), "--workers", "1", str(run_dir2)],
-                   cwd=repo2, capture_output=True, text=True, check=False, env=env2)
+    r2 = subprocess.run(["bash", str(SCRIPT), "--workers", "1", str(run_dir2)],
+                         cwd=repo2, capture_output=True, text=True, check=False, env=env2)
     s = json.loads((run_dir2 / "summary.json").read_text())
     check(s["workers"][0]["status"] == "no-changes", "a worker that changed nothing is no-changes")
     check(s["workers"][0]["commit"] == "", "no-changes worker has no commit")
+    check(r2.returncode == 0, "a no-changes worker still makes the run exit 0")
+
+print("summary: rejected commit")
+with tempfile.TemporaryDirectory() as tmp:
+    root = pathlib.Path(tmp)
+    bin_dir = root / "bin"
+    install_fake_codex(bin_dir)
+    repo = make_repo(root / "repo")
+    run_dir = root / "run"
+    write_tasks(run_dir, "gamma")
+
+    # Worktrees share the main repo's .git/hooks (no core.hooksPath override),
+    # so a hook installed here applies to every worktree the script creates.
+    hooks = repo / ".git" / "hooks"
+    hooks.mkdir(parents=True, exist_ok=True)
+    pre_commit = hooks / "pre-commit"
+    pre_commit.write_text("#!/usr/bin/env bash\nexit 1\n")
+    pre_commit.chmod(0o755)
+
+    base_sha = git(repo, "rev-parse", "main")
+    r = run(repo, bin_dir, "--workers", "1", str(run_dir))
+    check(r.returncode == 1, "a rejected commit makes the run exit 1")
+
+    s = json.loads((run_dir / "summary.json").read_text())
+    gamma = s["workers"][0]
+    check(gamma["status"] == "failed-commit",
+          "a hook-rejected commit is failed-commit, not ok with the base sha")
+    check(gamma["commit"] == "", "a rejected commit records no commit sha")
+    check(git(repo, "rev-parse", "main") == base_sha, "base branch still untouched")
 
 print()
 if failures:

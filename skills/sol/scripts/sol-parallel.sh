@@ -209,8 +209,15 @@ post_process() {
     if [ "$status" = "ok" ]; then
       files="$(git -C "$wt" status --porcelain | sed 's/^...//')"
       git -C "$wt" add -A >/dev/null 2>&1
-      git -C "$wt" commit -q -m "sol: $slug" >/dev/null 2>&1
-      commit="$(git -C "$wt" rev-parse HEAD)"
+      if git -C "$wt" commit -q -m "sol: $slug" >/dev/null 2>&1; then
+        commit="$(git -C "$wt" rev-parse HEAD)"
+      else
+        # `rev-parse HEAD` still succeeds when the commit was rejected (a hook,
+        # a bad identity), returning the BASE sha — which looks like a real
+        # commit and reported the worker as ok with its work stranded uncommitted.
+        status="failed-commit"
+        commit=""
+      fi
     fi
 
     if [ -f "$w/started-at" ]; then
@@ -327,6 +334,13 @@ fi
 run_status="${setup_status:-0}"
 while read -r slug; do
   [ -n "$slug" ] || continue
-  [ "$(cat "$OUT_DIR/$slug/exit-code" 2>/dev/null || echo 1)" = "0" ] || run_status=1
+  # Classify from `status`, not from the worker's own exit code. A worker whose
+  # event log is empty exits 0 while having accomplished nothing — reading
+  # exit-code here reported the run as a success for precisely the failure this
+  # script exists to catch.
+  case "$(cat "$OUT_DIR/$slug/status" 2>/dev/null || echo failed-launch)" in
+    ok|no-changes) ;;
+    *) run_status=1 ;;
+  esac
 done < <(worker_slugs)
 exit "$run_status"
