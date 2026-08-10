@@ -4,7 +4,9 @@
 #
 # Usage:
 #   sol-parallel.sh [--workers N] <run-dir>     launch and wait
-#   sol-parallel.sh --dry-run   <run-dir>       create worktrees only, do not launch
+#   sol-parallel.sh --dry-run   <run-dir>       create and bootstrap worktrees, then
+#                                                stop before launching any Codex session
+#                                                — inspect the setup before spending runs
 #   sol-parallel.sh --wait      <run-dir>       re-attach to a running batch
 #   sol-parallel.sh --resume    <run-dir>       send correction briefs
 #   sol-parallel.sh --cleanup   <run-dir>       remove merged worktrees/branches
@@ -25,14 +27,16 @@ die() { printf 'sol-parallel: %s\n' "$1" >&2; exit "${2:-2}"; }
 MODE="launch"
 WORKERS=""
 RUN_DIR=""
+DRY_RUN=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --workers) [ $# -ge 2 ] || die "--workers requires a value"
                WORKERS="$2"; shift 2 ;;
+    --dry-run) DRY_RUN=1; shift ;;
     --wait)    MODE="wait";    shift ;;
     --resume)  MODE="resume";  shift ;;
     --cleanup) MODE="cleanup"; shift ;;
-    -h|--help) sed -n '2,14p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,17p' "$0"; exit 0 ;;
     -*)        die "unknown option: $1" ;;
     *)         RUN_DIR="$1"; shift ;;
   esac
@@ -77,9 +81,76 @@ preflight_launch() {
   BRIEFS=("${briefs[@]}")
 }
 
+slug_for() {
+  local base
+  base="$(basename "$1" .md)"
+  base="${base#[0-9][0-9]-}"
+  base="$(printf '%s' "$base" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9' '-')"
+  base="${base#-}"; base="${base%-}"
+  printf '%s' "${base:0:32}"
+}
+
+bootstrap_worktree() {
+  local wt="$1" slug="$2" f
+  for f in "$REPO_ROOT"/.env "$REPO_ROOT"/.env.*; do
+    [ -f "$f" ] || continue
+    case "$(basename "$f")" in .env.example|.env.sample) continue ;; esac
+    git -C "$REPO_ROOT" check-ignore -q "$f" || continue
+    cp "$f" "$wt/$(basename "$f")" || return 1
+  done
+  if [ -n "${SOL_WORKTREE_SETUP:-}" ]; then
+    ( cd "$wt" && eval "$SOL_WORKTREE_SETUP" ) \
+      >"$OUT_DIR/$slug/setup.log" 2>&1 || return 1
+  fi
+  return 0
+}
+
+create_worktrees() {
+  local branch sha brief slug wt
+  branch="$(git rev-parse --abbrev-ref HEAD)"
+  sha="$(git rev-parse HEAD)"
+  mkdir -p "$OUT_DIR" "$WORKTREE_ROOT"
+  printf '%s\t%s\n' "$branch" "$sha" > "$RUN_DIR/base"
+
+  SLUGS=(); WORKTREES=(); BRIEF_OF=()
+  for brief in "${BRIEFS[@]}"; do
+    slug="$(slug_for "$brief")"
+    local n=2
+    while printf '%s\n' "${SLUGS[@]:-}" | grep -qx "$slug"; do
+      slug="$(slug_for "$brief")-$n"; n=$((n + 1))
+    done
+    git show-ref --verify --quiet "refs/heads/sol/$slug" \
+      && die "branch sol/$slug already exists; delete it or rename the brief"
+    SLUGS+=("$slug"); BRIEF_OF+=("$brief")
+    WORKTREES+=("$WORKTREE_ROOT/$slug")
+  done
+
+  local i status=0
+  for i in "${!SLUGS[@]}"; do
+    slug="${SLUGS[i]}"; wt="${WORKTREES[i]}"
+    mkdir -p "$OUT_DIR/$slug"
+    git worktree add -q -b "sol/$slug" "$wt" HEAD \
+      || die "could not create worktree for $slug"
+    if ! bootstrap_worktree "$wt" "$slug"; then
+      printf 'failed-setup\n' > "$OUT_DIR/$slug/status"
+      printf 'sol-parallel: %s: failed-setup (see %s)\n' \
+        "$slug" "$OUT_DIR/$slug/setup.log" >&2
+      status=1
+    fi
+  done
+  return "$status"
+}
+
 case "$MODE" in
   launch)  preflight_launch ;;
   *)       [ -d "$OUT_DIR" ] || die "no run directory to $MODE: $OUT_DIR" ;;
 esac
+
+if [ "$MODE" = "launch" ]; then
+  create_worktrees; setup_status=$?
+  if [ "$DRY_RUN" -eq 1 ]; then
+    exit "$setup_status"
+  fi
+fi
 
 exit 0

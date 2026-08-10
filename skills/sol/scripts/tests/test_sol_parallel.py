@@ -163,6 +163,67 @@ with tempfile.TemporaryDirectory() as tmp:
     check(r.returncode == 2, "exit 2 on a dirty working tree")
     (repo / "dirty.txt").unlink()
 
+print("worktrees")
+with tempfile.TemporaryDirectory() as tmp:
+    root = pathlib.Path(tmp)
+    bin_dir = root / "bin"
+    install_fake_codex(bin_dir)
+    repo = make_repo(root / "repo")
+    run_dir = root / "run"
+    write_tasks(run_dir, "alpha", "beta")
+
+    wt_root = root / ".sol-worktrees" / "repo"
+
+    r = run(repo, bin_dir, "--workers", "2", "--dry-run", str(run_dir))
+    check(r.returncode == 0, f"--dry-run exits 0 (stderr: {r.stderr[:200]})")
+    check((wt_root / "alpha").is_dir(), "creates a worktree per brief")
+    check((wt_root / "beta").is_dir(), "creates the second worktree")
+    check("sol/alpha" in git(repo, "branch", "--list", "sol/alpha"),
+          "creates branch sol/<slug>")
+    check((wt_root / "alpha" / ".env").is_file(), "copies .env into the worktree")
+    check(not (wt_root / "alpha" / ".env").is_symlink(), "copies .env rather than symlinking")
+    check((wt_root / "alpha" / ".env.local").is_file(), "copies .env.* variants too")
+    check(not (wt_root / "alpha" / ".env.sample").exists(),
+          "never copies .env.sample / .env.example")
+    base = (run_dir / "base").read_text().split("\t")
+    check(base[0] == "main", "records the base branch")
+
+    # a pre-existing branch is a hard stop
+    shutil.rmtree(wt_root)
+    git(repo, "worktree", "prune")
+    r = run(repo, bin_dir, "--workers", "2", "--dry-run", str(run_dir))
+    check(r.returncode == 2, "exit 2 when sol/<slug> already exists")
+    check("sol/alpha" in r.stderr, "names the colliding branch")
+
+print("worktree setup hook")
+with tempfile.TemporaryDirectory() as tmp:
+    root = pathlib.Path(tmp)
+    bin_dir = root / "bin"
+    install_fake_codex(bin_dir)
+    repo = make_repo(root / "repo")
+    run_dir = root / "run"
+    write_tasks(run_dir, "alpha")
+    env = dict(os.environ)
+    env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
+    env["SOL_WORKTREE_SETUP"] = "echo ran > setup-marker.txt"
+    r = subprocess.run(
+        ["bash", str(SCRIPT), "--workers", "1", "--dry-run", str(run_dir)],
+        cwd=repo, capture_output=True, text=True, check=False, env=env,
+    )
+    marker = root / ".sol-worktrees" / "repo" / "alpha" / "setup-marker.txt"
+    check(r.returncode == 0, "setup hook run exits 0")
+    check(marker.is_file(), "SOL_WORKTREE_SETUP runs inside the worktree")
+
+    env["SOL_WORKTREE_SETUP"] = "exit 3"
+    run_dir2 = root / "run2"
+    write_tasks(run_dir2, "gamma")
+    r = subprocess.run(
+        ["bash", str(SCRIPT), "--workers", "1", "--dry-run", str(run_dir2)],
+        cwd=repo, capture_output=True, text=True, check=False, env=env,
+    )
+    check(r.returncode == 1, "a failing setup hook fails that worker")
+    check("failed-setup" in (r.stdout + r.stderr), "reports failed-setup")
+
 print()
 if failures:
     print(f"{len(failures)} check(s) failed:")
