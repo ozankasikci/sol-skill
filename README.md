@@ -118,6 +118,32 @@ python3 skills/sol/scripts/sol-watch.py "$SCRATCHPAD/sol-events.jsonl" --once
 
 Routine `rg`/`ls`/`cat` calls are suppressed; test-looking commands surface even when they aren't a recognised runner; codex's informational notices that masquerade as `error` items are filtered narrowly so real errors never are.
 
+### Parallel workers
+
+Several *independent* tasks can run at once, one Codex session and one git worktree each.
+It is opt-in per run and never inferred — the trigger is a worker count you type:
+
+```
+/sol --workers 3 rate-limit the upload endpoint, add --json to the preflight, and write the 1.3.0 changelog
+```
+
+Claude shows you the split and the file scope of each task and waits before creating
+anything. Then one blocking call fans out N `codex exec` workers, each in its own
+worktree on branch `sol/<slug>`. Claude reviews each diff, cherry-picks the approved
+branches onto your branch one at a time — one commit per task — and **re-runs your
+checks once on the merged result.** That last part is the point: each worker verified
+green against a base that does not contain the other workers' changes, so N green
+isolated runs are not a green integrated run, and the report leads with the combined
+result.
+
+A task that fails review gets the normal two correction rounds in its own worktree while
+the others merge; anything still failing leaves its branch behind, named in the report.
+
+Defaults: worker ceiling `3`, raised with `SOL_MAX_WORKERS` — asking for more than the
+ceiling is refused with a reason, never silently clamped. Set `SOL_WORKTREE_SETUP` to a
+command (`npm ci`, `uv sync`) if a fresh worktree needs bootstrapping — worktrees do not
+inherit gitignored files, though `/sol` copies your `.env` files in for you.
+
 **5. Report.** Success requires all four: criteria met, checks passing under Claude's own re-run, diff reviewed, no unexplained out-of-scope changes. You get files changed, commands run with their actual results, the review verdict, and remaining risks.
 
 ### Research mode
@@ -280,7 +306,9 @@ bash skills/sol/scripts/check-codex.sh --json
 
 ### Changing the defaults
 
-The whole skill is one readable markdown file: [`skills/sol/SKILL.md`](skills/sol/SKILL.md). There's no config file; you change behavior by editing it.
+The whole skill is one readable markdown file: [`skills/sol/SKILL.md`](skills/sol/SKILL.md).
+Behavior changes by editing it, with two exceptions that survive a skill update:
+`SOL_MAX_WORKERS` and `SOL_WORKTREE_SETUP` (see [Parallel workers](#parallel-workers)).
 
 **Use a different implementer.** The model is passed explicitly with `-m`, so swap it for any model your Codex CLI can reach. Nothing else in the flow assumes Sol specifically.
 

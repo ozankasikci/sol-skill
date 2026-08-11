@@ -4,6 +4,37 @@ All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.0] — 2026-08-10
+
+### Added
+
+- Parallel workers, opt-in per run: `/sol --workers N` runs N independent tasks at
+  once, one `codex exec` session and one git worktree per task. Claude splits the
+  request, shows the split with each task's file scope and waits for confirmation,
+  then reviews each branch and cherry-picks the approved ones onto your branch — one
+  commit per task.
+- `skills/sol/scripts/sol-parallel.sh` owns everything mechanical: worktree creation
+  and bootstrap, the fan-out launch, waiting, per-worker bookkeeping, `summary.json`,
+  correction batches, and cleanup. The planner never composes a fan-out itself, which
+  is what made the 1.1.0 background flow degrade to silence.
+- `SOL_MAX_WORKERS` (default 3) and `SOL_WORKTREE_SETUP`. Asking for more workers than
+  the ceiling is refused with a reason, never silently clamped.
+- After integration the project's checks are re-run **once on the merged branch**, and
+  that result leads the report. N green isolated runs are not a green integrated run.
+
+### Changed
+
+- Parallel mode requires a clean working tree (single-worker mode still only warns):
+  every worker branches from `HEAD`, so a dirty `HEAD` puts changes nobody made into
+  every worker's diff.
+- `check-codex.sh` gains a `worktree_root` check.
+
+### Fixed
+
+- Corrections in parallel mode resume by explicit session id read from the worker's own
+  event log, never `codex exec resume --last`, which with N sessions in flight would
+  silently correct an arbitrary worker.
+
 ## [1.2.1] — 2026-08-05
 
 ### Fixed
@@ -128,6 +159,7 @@ First public release.
   test/lint/typecheck commands itself — none of which are `codex exec` calls, so all
   of them were blocked.
 
+[1.3.0]: https://github.com/ozankasikci/sol-skill/releases/tag/v1.3.0
 [1.2.1]: https://github.com/ozankasikci/sol-skill/releases/tag/v1.2.1
 [1.2.0]: https://github.com/ozankasikci/sol-skill/releases/tag/v1.2.0
 [1.1.2]: https://github.com/ozankasikci/sol-skill/releases/tag/v1.1.2
