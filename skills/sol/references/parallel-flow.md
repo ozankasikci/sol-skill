@@ -123,8 +123,8 @@ compare against that worker's `files_changed` in `summary.json`.
 
 ## 8. Integrate one branch at a time
 
-From the repo root, on the base branch (`summary.json`'s `base_branch` /
-`base_sha`), once a worker passes review:
+From the repo root, on the base branch (`summary.json`'s `base_branch` — check it out
+first if you're not already on it), once a worker passes review:
 
 ```bash
 git cherry-pick sol/<slug>
@@ -162,10 +162,15 @@ accepts no `-C`, `-s`, or `--color` (verified against codex-cli 0.144.6); the sc
 already handles this. **Never construct a `codex exec resume` command by hand in
 parallel mode.**
 
+`--resume` blocks the same way `--workers` does in step 5 — if the tool call times out
+before it returns, re-attach with the same `--wait "$SCRATCHPAD/sol-run"` call, then
+re-read `summary.json` once it exits 0 or 1.
+
 Each round's `correction.md` is renamed to `correction-1.md`, `correction-2.md`, ... as
 it's consumed, so rounds are visible on disk per worker. Track rounds per worker
 independently and stop after 2 rounds for that worker, same ceiling as single-worker
-mode. Re-review after each round (back to step 7 for that worker).
+mode — after 2 rounds, stop and report the remaining issue to the user instead of
+looping. Re-review after each round (back to step 7 for that worker).
 
 ## 10. Re-run the checks on the merged branch
 
