@@ -67,7 +67,19 @@ done
 [ -n "${FAKE_ARGLOG:-}" ] && printf '%s\n' "$*" >> "$FAKE_ARGLOG"
 cat >/dev/null                      # consume the brief
 slug="$(basename "$(dirname "$out_file")")"
+# Each worker stamps its own start and end when FAKE_STAMPS is set, so a test
+# can assert concurrency directly (do the intervals overlap?) instead of racing
+# a wall clock. `date +%s.%N` is GNU-only -- BSD date prints a literal N -- so
+# go through python3, which every other part of this suite already needs.
+# Short O_APPEND writes from concurrent processes do not interleave.
+stamp() {
+  [ -n "${FAKE_STAMPS:-}" ] || return 0
+  python3 -c 'import sys,time; print(sys.argv[1], sys.argv[2], time.time())' \
+    "$slug" "$1" >> "$FAKE_STAMPS"
+}
+stamp start
 [ -n "${FAKE_SLEEP:-}" ] && sleep "$FAKE_SLEEP"
+stamp end
 if [ -z "${FAKE_EMPTY:-}" ]; then
   printf '{"type":"thread.started","thread_id":"%s"}\n' "${FAKE_THREAD:-019f-$slug}"
   printf '{"type":"turn.completed"}\n'
@@ -84,6 +96,44 @@ def install_fake_codex(bin_dir: pathlib.Path) -> None:
     bin_dir.mkdir(parents=True, exist_ok=True)
     shim = bin_dir / "codex"
     shim.write_text(FAKE_CODEX)
+    shim.chmod(0o755)
+
+
+# A test seam, not a mock of anything the script cares about. sol-parallel.sh
+# shells out to `awk` in exactly one place -- pid_of() -- which runs *between*
+# wait_for_workers' `[ -s exit-code ]` test and its `kill -0 "$pid"`. That gap is
+# the race window. Blocking inside it until the worker has written its exit code
+# and exited puts the loop into the window deterministically, on every run,
+# instead of hoping to land in it under load. The worker itself is untouched: it
+# succeeds exactly as it otherwise would.
+FAKE_AWK = r"""#!/usr/bin/env bash
+set -uo pipefail
+out="$(__REAL_AWK__ "$@")"
+pid="$(printf '%s' "$out" | head -1 | tr -d '[:space:]')"
+case "$pid" in
+  ''|*[!0-9]*) printf '%s\n' "$out"; exit 0 ;;
+esac
+i=0
+while [ "$i" -lt 300 ] && kill -0 "$pid" 2>/dev/null; do
+  sleep 0.1; i=$((i + 1))
+done
+if [ -n "${FAKE_AWK_LOG:-}" ]; then
+  if kill -0 "$pid" 2>/dev/null; then
+    printf 'alive %s\n' "$pid" >> "$FAKE_AWK_LOG"
+  else
+    printf 'dead %s\n' "$pid" >> "$FAKE_AWK_LOG"
+  fi
+fi
+printf '%s\n' "$out"
+"""
+
+
+def install_fake_awk(bin_dir: pathlib.Path) -> None:
+    real = shutil.which("awk")
+    assert real, "no real awk on PATH"
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    shim = bin_dir / "awk"
+    shim.write_text(FAKE_AWK.replace("__REAL_AWK__", real))
     shim.chmod(0o755)
 
 
@@ -306,22 +356,48 @@ with tempfile.TemporaryDirectory() as tmp:
         wt = root / ".sol-worktrees" / "repo" / slug
         check((wt / f"{slug}.txt").is_file(), f"{slug}: worker wrote into its own worktree")
 
-    # workers really are concurrent: two 2s workers finish in well under 4s
+    # Workers really are concurrent. Asserted from the workers' OWN start/end
+    # stamps, not from the launcher's wall clock: the run's wall time also
+    # carries worktree creation, launch, and a tail of up to one 2s poll after
+    # the last worker exits, so no wall-clock bound both fits an idle machine
+    # and survives a loaded one. Overlapping intervals prove concurrency
+    # directly and cannot flake under load -- a serialised launcher produces
+    # disjoint intervals no matter how slow or fast the box is.
     repo2 = make_repo(root / "repo2")
     run_dir2 = root / "run2"
     write_tasks(run_dir2, "one", "two")
+    stamps = root / "stamps.txt"
     env = dict(os.environ)
     env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
     env["FAKE_SLEEP"] = "2"
-    import time
-    t0 = time.time()
+    env["FAKE_STAMPS"] = str(stamps)
     r = subprocess.run(
         ["bash", str(SCRIPT), "--workers", "2", str(run_dir2)],
         cwd=repo2, capture_output=True, text=True, check=False, env=env,
     )
-    elapsed = time.time() - t0
     check(r.returncode == 0, "concurrent run exits 0")
-    check(elapsed < 3.5, f"two 2s workers ran concurrently (took {elapsed:.1f}s)")
+
+    spans: dict[str, dict[str, float]] = {}
+    for line in stamps.read_text().splitlines() if stamps.exists() else []:
+        parts = line.split()
+        if len(parts) == 3:
+            spans.setdefault(parts[0], {})[parts[1]] = float(parts[2])
+    check(
+        all(slug in spans and {"start", "end"} <= set(spans[slug]) for slug in ("one", "two")),
+        f"both workers recorded a start and an end stamp (got {spans!r})",
+    )
+    if all(slug in spans and {"start", "end"} <= set(spans[slug]) for slug in ("one", "two")):
+        one, two = spans["one"], spans["two"]
+        overlap = min(one["end"], two["end"]) - max(one["start"], two["start"])
+        check(
+            overlap > 0,
+            f"the two workers' run intervals overlap, i.e. they really ran at the "
+            f"same time rather than one after the other "
+            f"(overlap {overlap:.2f}s; one=[{one['start']:.2f},{one['end']:.2f}] "
+            f"two=[{two['start']:.2f},{two['end']:.2f}])",
+        )
+    else:
+        check(False, "the two workers' run intervals overlap (no stamps to compare)")
 
 print("launch failures")
 with tempfile.TemporaryDirectory() as tmp:
@@ -453,6 +529,68 @@ with tempfile.TemporaryDirectory() as tmp:
             proc.kill()
             proc.communicate()
 
+print("worker that finishes inside the wait loop's own race window")
+with tempfile.TemporaryDirectory() as tmp:
+    root = pathlib.Path(tmp)
+    bin_dir = root / "bin"
+    install_fake_codex(bin_dir)
+    install_fake_awk(bin_dir)          # widens the window; see FAKE_AWK
+    repo = make_repo(root / "repo")
+    run_dir = root / "run"
+    write_tasks(run_dir, "racer")
+    awk_log = root / "awk.log"
+
+    env = dict(os.environ)
+    env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
+    env.pop("SOL_MAX_WORKERS", None)
+    env.pop("SOL_WORKTREE_SETUP", None)
+    env["FAKE_SLEEP"] = "1"
+    env["FAKE_AWK_LOG"] = str(awk_log)
+
+    try:
+        r = subprocess.run(
+            ["bash", str(SCRIPT), "--workers", "1", str(run_dir)],
+            cwd=repo, capture_output=True, text=True, check=False, env=env,
+            timeout=90,
+        )
+    except subprocess.TimeoutExpired:
+        r = None
+        for label in ("the race seam really fired",
+                      "a worker that finishes mid-poll keeps its real exit code",
+                      "...is classified ok, not failed-run",
+                      "...has its work committed, not stranded in the worktree",
+                      "...does not fail the run"):
+            check(False, f"{label} (run timed out)")
+
+    if r is not None:
+        # Prove the seam did what it claims: the wrapper really was already gone
+        # by the time the loop got its pid. Without this the test could pass for
+        # the wrong reason -- never entering the window at all.
+        seen = awk_log.read_text().strip() if awk_log.is_file() else "<no awk log>"
+        check("dead" in seen,
+              f"the race seam really fired: the wait loop got the pid only after the "
+              f"worker had exited (awk log: {seen!r})")
+
+        w = run_dir / "workers" / "racer"
+        code = (w / "exit-code").read_text().strip()
+        status = (w / "status").read_text().strip()
+        check(code == "0",
+              f"a worker that finishes between the exit-code check and the liveness "
+              f"check keeps its real exit code, instead of having it overwritten with "
+              f"137 by a reap of an already-dead process group (got {code!r})")
+        check(status == "ok",
+              f"...and is classified ok, not failed-run (got {status!r})")
+        check((w / "commit").read_text().strip() != "",
+              "...and its work is committed, not left stranded uncommitted in "
+              "the worktree")
+        wt = root / ".sol-worktrees" / "repo" / "racer"
+        dirty = subprocess.run(["git", "status", "--porcelain"], cwd=wt,
+                               capture_output=True, text=True, check=False).stdout
+        check(dirty.strip() == "",
+              f"...leaving nothing uncommitted behind (porcelain: {dirty.strip()!r})")
+        check(r.returncode == 0,
+              f"...and does not fail the run (got {r.returncode}, stderr: {r.stderr[:200]})")
+
 print("summary")
 with tempfile.TemporaryDirectory() as tmp:
     root = pathlib.Path(tmp)
@@ -543,6 +681,112 @@ with tempfile.TemporaryDirectory() as tmp:
           "a hook-rejected commit is failed-commit, not ok with the base sha")
     check(gamma["commit"] == "", "a rejected commit records no commit sha")
     check(git(repo, "rev-parse", "main") == base_sha, "base branch still untouched")
+    # The work is real, staged, and uncommitted. summary.json is the only place
+    # the user is told where to look for it; an empty files_changed here is the
+    # difference between "recoverable" and "gone".
+    check(gamma["files_changed"] == ["gamma.txt"],
+          f"a failed-commit worker still reports the work it stranded in its "
+          f"worktree (got {gamma['files_changed']!r})")
+
+print("summary: a non-ok worker's stranded work is still reported")
+with tempfile.TemporaryDirectory() as tmp:
+    root = pathlib.Path(tmp)
+    bin_dir = root / "bin"
+    install_fake_codex(bin_dir)
+    repo = make_repo(root / "repo")
+    run_dir = root / "run"
+    write_tasks(run_dir, "broken")
+    env = dict(os.environ)
+    env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
+    env["FAKE_EXIT"] = "1"          # failed-run, but it wrote a file first
+    r = subprocess.run(["bash", str(SCRIPT), "--workers", "1", str(run_dir)],
+                       cwd=repo, capture_output=True, text=True, check=False, env=env)
+    check(r.returncode == 1, f"a failed-run launch exits 1 (stderr: {r.stderr[:200]})")
+    s = json.loads((run_dir / "summary.json").read_text())
+    broken = s["workers"][0]
+    check(broken["status"] == "failed-run", "sanity: the worker really is failed-run")
+    # failed-run and timed-out never reach `git add`, so the work sits in the
+    # worktree as untracked files. Reporting [] for them stranded it exactly the
+    # way failed-commit did.
+    check(broken["files_changed"] == ["broken.txt"],
+          f"a failed-run worker reports the uncommitted work left in its worktree "
+          f"(got {broken['files_changed']!r})")
+
+    # The other direction: a non-ok worker that genuinely did nothing must not
+    # be given invented files.
+    repo2 = make_repo(root / "repo2")
+    run_dir2 = root / "run2"
+    write_tasks(run_dir2, "sterile")
+    env2 = dict(os.environ)
+    env2["PATH"] = f"{bin_dir}{os.pathsep}{env2['PATH']}"
+    env2["FAKE_EXIT"] = "1"
+    env2["FAKE_NOCHANGE"] = "1"     # failed, and touched nothing
+    r2 = subprocess.run(["bash", str(SCRIPT), "--workers", "1", str(run_dir2)],
+                        cwd=repo2, capture_output=True, text=True, check=False, env=env2)
+    check(r2.returncode == 1, f"a no-op failed-run launch exits 1 (stderr: {r2.stderr[:200]})")
+    s2 = json.loads((run_dir2 / "summary.json").read_text())
+    check(s2["workers"][0]["status"] == "failed-run", "sanity: also failed-run")
+    check(s2["workers"][0]["files_changed"] == [],
+          f"a failed-run worker with a clean worktree reports no files, not the "
+          f"copied .env or other noise (got {s2['workers'][0]['files_changed']!r})")
+
+print("--wait / --resume keep a failed-setup worker on the roster")
+with tempfile.TemporaryDirectory() as tmp:
+    root = pathlib.Path(tmp)
+    bin_dir = root / "bin"
+    install_fake_codex(bin_dir)
+    repo = make_repo(root / "repo")
+    run_dir = root / "run"
+    write_tasks(run_dir, "good", "bad")
+
+    env = dict(os.environ)
+    env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
+    env.pop("SOL_MAX_WORKERS", None)
+    # Fail bootstrap for exactly one of the two workers. The hook runs with the
+    # worktree as cwd, and the worktree is named after the slug.
+    env["SOL_WORKTREE_SETUP"] = 'case "$PWD" in */bad) exit 3 ;; esac'
+
+    r = subprocess.run(["bash", str(SCRIPT), "--workers", "2", str(run_dir)],
+                       cwd=repo, capture_output=True, text=True, check=False, env=env)
+    check(r.returncode == 1, f"launch exits 1 when one worker's setup fails "
+          f"(stderr: {r.stderr[:200]})")
+    s = json.loads((run_dir / "summary.json").read_text())
+    check([w["slug"] for w in s["workers"]] == ["good", "bad"],
+          f"sanity: launch's summary lists both workers in task order "
+          f"(got {[w['slug'] for w in s['workers']]!r})")
+    check([w["status"] for w in s["workers"]] == ["ok", "failed-setup"],
+          f"sanity: bad really is failed-setup "
+          f"(got {[w['status'] for w in s['workers']]!r})")
+    check("bad" not in (run_dir / "pids.all").read_text(),
+          "sanity: pids.all really does exclude the never-launched worker")
+
+    # parallel-flow.md §5 says the launch call routinely outruns its tool-call
+    # budget and Claude re-attaches with --wait, so this is the normal path.
+    # Rehydrating from pids.all erased `bad` from summary.json and turned a run
+    # that had correctly exited 1 into a silent exit 0 -- the worker's own
+    # `status` file on disk still saying failed-setup the whole time.
+    r = run(repo, bin_dir, "--wait", str(run_dir))
+    check(r.returncode == 1,
+          f"--wait still exits 1 for a failed-setup worker it never launched "
+          f"(got {r.returncode})")
+    s = json.loads((run_dir / "summary.json").read_text())
+    check([w["slug"] for w in s["workers"]] == ["good", "bad"],
+          f"--wait keeps the failed-setup worker in summary.json, in task order "
+          f"(got {[w['slug'] for w in s['workers']]!r})")
+    by_slug = {w["slug"]: w for w in s["workers"]}
+    check(by_slug.get("bad", {}).get("status") == "failed-setup",
+          f"--wait reports the failed-setup worker's real status "
+          f"(got {by_slug.get('bad', {}).get('status')!r})")
+
+    # Same erasure on the --resume path.
+    (run_dir / "workers" / "good" / "correction.md").write_text("good.txt:1 — tweak.\n")
+    r = run(repo, bin_dir, "--resume", str(run_dir))
+    check(r.returncode == 1,
+          f"--resume still exits 1 for a bystander failed-setup worker (got {r.returncode})")
+    s = json.loads((run_dir / "summary.json").read_text())
+    check([w["slug"] for w in s["workers"]] == ["good", "bad"],
+          f"--resume keeps the failed-setup worker in summary.json, in task order "
+          f"(got {[w['slug'] for w in s['workers']]!r})")
 
 print("--wait re-attach")
 with tempfile.TemporaryDirectory() as tmp:
@@ -1067,6 +1311,49 @@ with tempfile.TemporaryDirectory() as tmp:
           "worktree happens to be clean")
     check("sol/broken" in r.stdout,
           f"names the failed-run worker on stdout (stdout: {r.stdout!r})")
+
+print("--cleanup: an unverifiable base keeps everything instead of guessing 'integrated'")
+with tempfile.TemporaryDirectory() as tmp:
+    root = pathlib.Path(tmp)
+    bin_dir = root / "bin"
+    install_fake_codex(bin_dir)
+    repo = make_repo(root / "repo")
+    run_dir = root / "run"
+    write_tasks(run_dir, "rejected")
+    r = run(repo, bin_dir, "--workers", "1", str(run_dir))
+    check(r.returncode == 0, f"launch exits 0 (stderr: {r.stderr[:200]})")
+    check((run_dir / "workers" / "rejected" / "status").read_text().strip() == "ok",
+          "sanity: the worker is ok and its worktree is clean, so nothing but the "
+          "integration check itself stands between it and removal")
+
+    # This worker was reviewed and REJECTED: its patch was never integrated. Then
+    # the base branch is renamed -- an ordinary merged-and-pruned action. Now
+    # `git cherry main sol/rejected` fails outright: it prints nothing, `grep -c`
+    # dutifully reports 0 unmerged commits, and a check that reads only the
+    # output concludes "fully integrated" from a command that never ran.
+    git(repo, "branch", "-m", "main", "trunk")
+    check(git(repo, "rev-parse", "--abbrev-ref", "HEAD") == "trunk",
+          "sanity: the base branch really was renamed out from under the run")
+    probe = subprocess.run(["git", "cherry", "main", "sol/rejected"], cwd=repo,
+                           capture_output=True, text=True, check=False)
+    check(probe.returncode != 0 and probe.stdout.strip() == "",
+          f"sanity: git cherry really does fail with empty stdout here "
+          f"(rc {probe.returncode}, stdout {probe.stdout!r})")
+
+    wt = root / ".sol-worktrees" / "repo" / "rejected"
+    r = run(repo, bin_dir, "--cleanup", str(run_dir))
+    check(r.returncode == 0, f"--cleanup exits 0 (stderr: {r.stderr[:200]})")
+    check(wt.is_dir(),
+          "does NOT remove the worktree of un-integrated work just because the "
+          "integration check could not run")
+    check(git(repo, "branch", "--list", "sol/rejected") != "",
+          "does NOT delete the branch either")
+    check("sol/rejected" in r.stdout,
+          f"names the kept branch on stdout rather than saying nothing at all "
+          f"(stdout: {r.stdout!r})")
+    check("main" in r.stderr and "resolve" in r.stderr,
+          f"says on stderr that the base ref no longer resolves, so the operator "
+          f"knows why nothing was cleaned up (stderr: {r.stderr!r})")
 
 print("--cleanup: a kept line never prints a worktree path that no longer exists")
 with tempfile.TemporaryDirectory() as tmp:

@@ -132,6 +132,13 @@ create_worktrees() {
     WORKTREES+=("$WORKTREE_ROOT/$slug")
   done
 
+  # The authoritative roster of the run, in task order, written before anything
+  # can fail. `pids.all` is not a substitute: launch_workers only records
+  # workers it actually launched, so a failed-setup worker never appears there
+  # and every re-attach path that rehydrated from it dropped the worker --
+  # and with it the run's failure -- entirely.
+  printf '%s\n' "${SLUGS[@]}" > "$RUN_DIR/roster"
+
   local i status=0
   for i in "${!SLUGS[@]}"; do
     slug="${SLUGS[i]}"; wt="${WORKTREES[i]}"
@@ -222,8 +229,21 @@ pid_of() { awk -F'\t' -v s="$1" '$1 == s { print $2 }' "$RUN_DIR/pids"; }
 # batch currently being waited on. These differ under --resume, where `pids` is
 # rewritten to just the corrected workers; rehydrating from `pids` there would
 # silently drop every other worker from summary.json.
+#
+# Prefer `roster`, written by create_worktrees. `pids.all` holds only the
+# workers that were actually LAUNCHED, so a failed-setup worker is missing from
+# it: --wait and --resume rehydrated a short roster, wrote a summary.json with
+# the failed worker erased, and exited 0 after a launch that had correctly
+# exited 1. Per parallel-flow.md §5 the re-attach path is the normal one, so
+# that was the common case, not an edge case. Fall back to `pids.all` and then
+# `pids` for a run directory created before `roster` existed.
+#
+# Deliberately NOT cleanup_slugs(): that walks OUT_DIR and sorts, which loses
+# task order. summary.json's worker array is contractually in task order.
 roster() {
-  if [ -f "$RUN_DIR/pids.all" ]; then cut -f1 "$RUN_DIR/pids.all"; else worker_slugs; fi
+  if   [ -s "$RUN_DIR/roster" ];   then cat "$RUN_DIR/roster"
+  elif [ -f "$RUN_DIR/pids.all" ]; then cut -f1 "$RUN_DIR/pids.all"
+  else worker_slugs; fi
 }
 
 rehydrate() {
@@ -307,6 +327,21 @@ post_process() {
     if [ "$status" = "ok" ]; then
       files="$(git -C "$wt" diff --name-only -z \
         "$(cut -f2 "$RUN_DIR/base")" HEAD | tr '\0' '\n')"
+    else
+      # A non-ok worker can still have produced real work, and reporting nothing
+      # for it is how that work went missing: failed-commit stages everything and
+      # then has its commit rejected, failed-run and timed-out leave it in the
+      # worktree untouched. With files_changed empty, summary.json gave the user
+      # no way to find any of it -- detected, then never reported. Snapshot
+      # everything the worktree holds that base does not: committed since base,
+      # staged or unstaged against HEAD, and untracked. `sort -u` because the
+      # three sources overlap; `-z | tr` for the same bare-filename reasons as
+      # the ok path above.
+      files="$( { git -C "$wt" diff --name-only -z \
+                    "$(cut -f2 "$RUN_DIR/base")" HEAD 2>/dev/null
+                  git -C "$wt" diff --name-only -z HEAD 2>/dev/null
+                  git -C "$wt" ls-files -o --exclude-standard -z 2>/dev/null
+                } | tr '\0' '\n' | LC_ALL=C sort -u)"
     fi
 
     if [ -f "$w/started-at" ]; then
@@ -376,7 +411,9 @@ wait_for_workers() {
     live=0
     while read -r slug; do
       [ -n "$slug" ] || continue
-      [ -f "$OUT_DIR/$slug/exit-code" ] && continue
+      # `-s`, not `-f`: the wrapper creates this file by redirection and fills it
+      # an instant later, so an empty one means "not finished", not "exit 0".
+      [ -s "$OUT_DIR/$slug/exit-code" ] && continue
       pid="$(pid_of "$slug")"
       if kill -0 "$pid" 2>/dev/null; then
         started="$(cat "$OUT_DIR/$slug/started-at" 2>/dev/null || echo 0)"
@@ -385,18 +422,38 @@ wait_for_workers() {
           # Signal the whole process group: the wrapper forked `codex`, so
           # killing the wrapper alone leaves the real worker running.
           kill -9 -- -"$pid" 2>/dev/null || kill -9 "$pid" 2>/dev/null
-          printf '124\n' > "$OUT_DIR/$slug/exit-code"
+          # Same shape as the re-stat below: a worker that finished in the
+          # instant between the liveness check and this kill has already
+          # recorded its real result, and 124 would overwrite it with a
+          # fabricated timeout.
+          [ -s "$OUT_DIR/$slug/exit-code" ] \
+            || printf '124\n' > "$OUT_DIR/$slug/exit-code"
           continue
         fi
         live=$((live + 1))
       else
-        # Gone without recording an exit code: killed or interrupted. The
-        # wrapper may have been killed alone (an operator's `kill -9`, an OOM
+        # Re-stat before concluding the worker vanished. The wrapper writes
+        # `exit-code` and only THEN exits, so a worker that finished between the
+        # check at the top of this iteration and the `kill -0` just above is not
+        # gone-without-a-result — it is done. Forking `pid_of` in between widens
+        # that window enough to land in it routinely under load. Treating it as
+        # a kill overwrote a real exit code with 137, which post_process then
+        # classified `failed-run`: a fully successful worker reported as failed,
+        # its work never committed and left stranded in the worktree, and the
+        # run exiting 1. Cheap stat, and the only thing standing between a
+        # finished worker and a fabricated failure.
+        if [ -s "$OUT_DIR/$slug/exit-code" ]; then
+          continue
+        fi
+        # Genuinely gone without recording an exit code: killed or interrupted.
+        # The wrapper may have been killed alone (an operator's `kill -9`, an OOM
         # kill), leaving `codex` orphaned — reap the group for the same reason
-        # the timeout branch does. Residual risk: if the pid has been recycled
-        # since we recorded it, this signals an unrelated group; the window is
-        # small and the alternative is a worker that runs unobserved forever.
-        kill -9 -- -"$pid" 2>/dev/null
+        # the timeout branch does, with the same single-pid fallback for a shell
+        # that rejects the group form. Residual risk: if the pid has been
+        # recycled since we recorded it, this signals an unrelated group; the
+        # window is small and the alternative is a worker that runs unobserved
+        # forever.
+        kill -9 -- -"$pid" 2>/dev/null || kill -9 "$pid" 2>/dev/null
         printf '137\n' > "$OUT_DIR/$slug/exit-code"
       fi
     done < <(worker_slugs)
@@ -411,12 +468,26 @@ wait_for_workers() {
 # unmerged, and only coincides when the cherry-pick lands in the same second as
 # the original commit — which is why a same-second test passed and real use would
 # not have. `git cherry` marks '+' any commit whose patch is not upstream.
+#
+# Fails CLOSED. Every "I don't know" answer must come back as "not integrated",
+# because the only caller uses a true answer to delete a branch and force-remove
+# a worktree. `grep -c` always prints a number, so gating on the output alone
+# turned a `git cherry` that never ran (base branch renamed or deleted after the
+# run — an ordinary merged-and-pruned action) into "0 unmerged commits" and thus
+# into a silent, unrecoverable removal of un-integrated work.
 branch_integrated() {
-  local base="$1" branch="$2" unmerged
+  local base="$1" branch="$2" unmerged cherry rc
   git show-ref --verify --quiet "refs/heads/$branch" || return 1
+  # If base no longer resolves, nothing below can judge anything.
+  git rev-parse --verify --quiet "$base^{commit}" >/dev/null 2>&1 || return 1
   git merge-base --is-ancestor "$branch" "$base" 2>/dev/null && return 0
-  unmerged="$(git cherry "$base" "$branch" 2>/dev/null | grep -c '^+' || true)"
-  [ "${unmerged:-1}" = "0" ]
+  # Capture `git cherry`'s own exit status, not just its (possibly empty) output.
+  # It has to be read before anything else runs: reading PIPESTATUS after
+  # `unmerged="$(... | grep -c ...)"` would report grep's status, not git's.
+  cherry="$(git cherry "$base" "$branch" 2>/dev/null)"; rc=$?
+  [ "$rc" -eq 0 ] || return 1
+  unmerged="$(printf '%s\n' "$cherry" | grep -c '^+')"
+  [ "$unmerged" = "0" ]
 }
 
 # Every worker directory the run ever created, not just roster()'s
@@ -443,6 +514,13 @@ cleanup_slugs() {
 cleanup_run() {
   local base slug wt rm_ok br_ok d wt_dirty removable
   base="$(cut -f1 "$RUN_DIR/base")"
+  # Say so once, out loud. branch_integrated fails closed on an unresolvable
+  # base, so everything is about to be kept — without this line the operator
+  # sees a --cleanup that cleans nothing up and is told nothing about why.
+  if ! git rev-parse --verify --quiet "$base^{commit}" >/dev/null 2>&1; then
+    printf 'sol-parallel: base ref %s no longer resolves (renamed or deleted?); integration cannot be verified, so nothing will be removed\n' \
+      "$base" >&2
+  fi
   while read -r slug; do
     [ -n "$slug" ] || continue
     wt="$WORKTREE_ROOT/$slug"

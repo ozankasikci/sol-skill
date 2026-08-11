@@ -102,6 +102,13 @@ pointed to below. It has one entry per worker in its `workers` array: `slug`, `b
 - `failed-setup` means `SOL_WORKTREE_SETUP` failed before codex ever ran — check
   `<run-dir>/workers/<slug>/setup.log`.
 
+`files_changed` is the branch's whole diff since `base_sha` for an `ok` worker. For a
+non-`ok` worker it is a snapshot of everything its worktree holds that the base does
+not — committed, staged, unstaged, or untracked — because a `failed-commit`,
+`failed-run`, or `timed-out` worker can leave real work sitting there uncommitted, and
+this is the only place the report tells the user where to find it. An empty list for a
+non-`ok` worker means that worker genuinely produced nothing.
+
 Every non-`ok` worker is named in the final report with its status — a task that
 produced nothing (`no-changes`) is reported as such, never silently omitted.
 
@@ -194,6 +201,12 @@ patch equivalence via `git cherry`, not ancestry — cherry-pick creates new com
 ancestry alone would miss genuinely-integrated work). Everything else is printed as a
 `kept: sol/<slug> <path> (<reason>)` line. Name every one of them in your report —
 nothing a worker produced is ever silently discarded.
+
+The integration check fails closed: if it cannot get a trustworthy answer — the base
+branch was renamed or deleted after the run, or `git cherry` itself errors — nothing is
+removed, every worker is printed as `kept:`, and the reason is written to stderr. A
+`--cleanup` that removes nothing and warns about the base ref is that guard firing, not
+a no-op; re-point or restore the base branch and run it again.
 
 ## 12. Report
 
