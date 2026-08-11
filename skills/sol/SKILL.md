@@ -20,6 +20,18 @@ Task: $ARGUMENTS
 
 **Task routing:** Implementation tasks follow phases 1–5. If the task is research or investigation (no code changes requested), the planner model does the research itself with its own tools — do NOT invoke Sol, unless the user explicitly names Sol as the researcher ("sol research…", "have sol research", "ask sol"). In that case skip to Research mode at the bottom.
 
+**Parallel routing:** If — and only if — the user names a worker count (`--workers N`,
+or "use 3 workers"), follow `references/parallel-flow.md` instead of phases 2–5. Never
+infer parallelism from a request that merely looks like several tasks; the trigger is
+the number the user typed, not a judgment about the work. `--workers 1` is the normal
+flow below.
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `--workers N` | — | Requested worker count for this run, capped by the ceiling below; its presence engages parallel mode |
+| `SOL_MAX_WORKERS` | `3` | Ceiling on worker count — caps `--workers` and is the count used when `--workers` is absent; exceeding it is refused, never clamped |
+| `SOL_WORKTREE_SETUP` | unset | Command run in each fresh worktree (`npm ci`, `uv sync`) |
+
 **Task tracking:** If harness task tools are available, call TaskCreate at the start (short title from the request, status in_progress), TaskUpdate once per phase transition (planning → Sol implementing → reviewing → corrections), and TaskUpdate to completed in the final report — or leave it in_progress with a note if blocked. Keep updates to one line; skip entirely if the tools are unavailable.
 
 ## 1. Plan (brief)
