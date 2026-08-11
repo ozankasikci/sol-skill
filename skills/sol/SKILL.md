@@ -1,6 +1,6 @@
 ---
 name: sol
-version: "1.2.1"
+version: "1.3.0"
 description: Delegate implementation (or, when explicitly requested, research) to GPT-5.6 Sol (xhigh reasoning) via Codex CLI. Claude plans, orchestrates, and reviews; Sol writes the code.
 argument-hint: "[implementation task]"
 disable-model-invocation: true
@@ -19,6 +19,18 @@ Task: $ARGUMENTS
 **Role split (strict):** Claude never edits production code in this flow. Claude plans, briefs Sol, reviews the real diff, and directs corrections. GPT-5.6 Sol (via Codex CLI) makes all code changes and runs tests.
 
 **Task routing:** Implementation tasks follow phases 1–5. If the task is research or investigation (no code changes requested), the planner model does the research itself with its own tools — do NOT invoke Sol, unless the user explicitly names Sol as the researcher ("sol research…", "have sol research", "ask sol"). In that case skip to Research mode at the bottom.
+
+**Parallel routing:** If — and only if — the user names a worker count (`--workers N`,
+or "use 3 workers"), follow `references/parallel-flow.md` instead of phases 2–5. Never
+infer parallelism from a request that merely looks like several tasks; the trigger is
+the number the user typed, not a judgment about the work. `--workers 1` is the normal
+flow below.
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `--workers N` | — | Requested worker count for this run, capped by the ceiling below; its presence engages parallel mode |
+| `SOL_MAX_WORKERS` | `3` | Ceiling on worker count — caps `--workers` and is the count used when `--workers` is absent; exceeding it is refused, never clamped |
+| `SOL_WORKTREE_SETUP` | unset | Command run in each fresh worktree (`npm ci`, `uv sync`) |
 
 **Task tracking:** If harness task tools are available, call TaskCreate at the start (short title from the request, status in_progress), TaskUpdate once per phase transition (planning → Sol implementing → reviewing → corrections), and TaskUpdate to completed in the final report — or leave it in_progress with a note if blocked. Keep updates to one line; skip entirely if the tools are unavailable.
 

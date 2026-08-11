@@ -52,6 +52,27 @@ End your final message with:
 </output_contract>
 ```
 
+## Parallel brief additions
+
+In parallel mode each worker runs in its own isolated git worktree, so no two workers
+ever touch the same working directory at once — but they share one repository's
+history, and the launcher integrates their branches afterward by cherry-picking each
+onto a common base. A scope fence keeps declared file scopes from overlapping, which is
+what makes that integration conflict-free and keeps each worker's isolated-green
+verification still meaningful once merged. Add this to every parallel brief's
+`<non_goals>`, plus a git-operation fence — the launcher, not the worker, owns commits
+and branches:
+
+```xml
+<non_goals>
+- Touch only these paths: [the task's declared file scope]. Another worker's changes
+  will be integrated onto the same base branch — staying inside your scope is what
+  keeps that integration conflict-free.
+- Do not commit, do not create or switch branches, do not run git rebase or merge.
+  The launcher commits your work on its own branch.
+</non_goals>
+```
+
 ## Research brief
 
 Only when the user explicitly names Sol as the researcher. Runs `-s read-only`.

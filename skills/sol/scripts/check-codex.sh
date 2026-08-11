@@ -223,6 +223,20 @@ else
   note "not a git repo — the review phase cannot diff; commit history won't isolate changes" "git_work_tree"
 fi
 
+# 6. Parallel mode: the sibling worktree root must be creatable
+if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  repo_root="$(git rev-parse --show-toplevel)"
+  wt_root="$(cd "$repo_root/.." && pwd)/.sol-worktrees/$(basename "$repo_root")"
+  if mkdir -p "$wt_root" 2>/dev/null; then
+    ok "parallel worktree root writable — $wt_root" "worktree_root"
+    rmdir "$wt_root" 2>/dev/null
+    rmdir "$(dirname "$wt_root")" 2>/dev/null
+  else
+    note "cannot create $wt_root — parallel mode (--workers) will not run" "worktree_root"
+    hint "single-worker /sol is unaffected"
+  fi
+fi
+
 if [ "$json" -eq 1 ]; then
   print_json
   if [ "$fail" -gt 0 ]; then
