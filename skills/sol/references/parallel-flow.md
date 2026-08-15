@@ -90,22 +90,34 @@ Once the launch call (or the last `--wait`) returns 0 or 1, read
 `<run-dir>/summary.json` — never `events.jsonl` or `report.md` directly except as
 pointed to below. It has one entry per worker in its `workers` array: `slug`, `branch`
 (`sol/<slug>`), `worktree` (absolute path), `status`, `exit_code`, `session_id`,
-`commit`, `files_changed`, `elapsed_seconds`, and the paths to that worker's
-`report.md` / `events.jsonl` / `stderr.txt`.
+`commit`, `files_changed`, `elapsed_seconds`, `effort_used`, `stall_retries`,
+`stall_reason`, and the paths to that worker's `report.md` / `events.jsonl` /
+`stderr.txt`.
 
 `status` is one of: `ok` · `no-changes` · `failed-launch` · `failed-run` ·
-`failed-setup` · `failed-commit` · `timed-out`.
+`failed-setup` · `failed-commit` · `timed-out` · `stalled`.
 
 - `failed-launch` means codex itself never produced an event (bad invocation, binary
   missing) — read the *tail* of that worker's `stderr.txt` (path from `summary.json`),
   not the whole file.
 - `failed-setup` means `SOL_WORKTREE_SETUP` failed before codex ever ran — check
   `<run-dir>/workers/<slug>/setup.log`.
+- `stalled` means the inactivity watchdog killed the worker: no substantive event
+  within `SOL_FIRST_EVENT_TIMEOUT` of launch, or no event at all for
+  `SOL_IDLE_TIMEOUT` after work had started (`stall_reason` says which). The
+  launcher already retried it `SOL_STALL_RETRIES` times, each attempt a fresh
+  session one reasoning-effort step lower — `effort_used` and `stall_retries`
+  record what happened, and each prior attempt's logs are archived as
+  `events-attempt-N.jsonl` beside the final ones. A worker still `stalled` in the
+  summary exhausted its retries: report it to the user rather than relaunching by
+  hand, and note that a retried worker's worktree keeps whatever the stalled
+  attempt had already edited (briefs describe an end state, so the retry builds on
+  it).
 
 `files_changed` is the branch's whole diff since `base_sha` for an `ok` worker. For a
 non-`ok` worker it is a snapshot of everything its worktree holds that the base does
 not — committed, staged, unstaged, or untracked — because a `failed-commit`,
-`failed-run`, or `timed-out` worker can leave real work sitting there uncommitted, and
+`failed-run`, `timed-out`, or `stalled` worker can leave real work sitting there uncommitted, and
 this is the only place the report tells the user where to find it. An empty list for a
 non-`ok` worker means that worker genuinely produced nothing.
 

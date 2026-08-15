@@ -15,14 +15,54 @@
 #
 # Env: SOL_MAX_WORKERS (default 3)   ceiling on --workers
 #      SOL_WORKTREE_SETUP            command run in each fresh worktree
+#      SOL_WORKER_TIMEOUT (1800)     absolute per-worker wall-clock cap, seconds
+#      SOL_FIRST_EVENT_TIMEOUT (900) kill a worker whose event log still holds
+#                                    nothing but thread/turn bookkeeping after
+#                                    this many seconds (codex hangs at high
+#                                    reasoning effort emit exactly that shape)
+#      SOL_IDLE_TIMEOUT (600)        kill a worker whose event log has gone
+#                                    this many seconds without a new event
+#      SOL_STALL_RETRIES (1)         automatic relaunches of a stalled worker,
+#                                    each one reasoning-effort step lower
 
 set -uo pipefail
 
 MODEL="${SOL_MODEL:-gpt-5.6-sol}"
 EFFORT="${SOL_EFFORT:-xhigh}"
 WORKER_TIMEOUT="${SOL_WORKER_TIMEOUT:-1800}"
+FIRST_EVENT_TIMEOUT="${SOL_FIRST_EVENT_TIMEOUT:-900}"
+IDLE_TIMEOUT="${SOL_IDLE_TIMEOUT:-600}"
+STALL_RETRIES="${SOL_STALL_RETRIES:-1}"
 
 die() { printf 'sol-parallel: %s\n' "$1" >&2; exit "${2:-2}"; }
+
+# BSD stat (macOS) then GNU stat; 0 for a missing file so age math never
+# explodes — callers treat 0 as "no heartbeat yet".
+mtime_of() { stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null || echo 0; }
+
+# One reasoning-effort step down. Stalls are empirically effort-correlated
+# (openai/codex#24260, #23807), so a stalled worker retries lower, never equal.
+next_effort() {
+  case "$1" in
+    xhigh)  echo high ;;
+    high)   echo medium ;;
+    medium) echo low ;;
+    *)      echo "$1" ;;
+  esac
+}
+
+# thread.*/turn.* (and session bookkeeping) arrive before codex does any real
+# work; a log holding only those is a worker that has not started. Anything
+# else — item events, commands, even errors — is evidence of life.
+has_substantive_event() {
+  [ -s "$1" ] || return 1
+  grep -qvE '"type"[[:space:]]*:[[:space:]]*"(thread\.|turn\.|session)' "$1"
+}
+
+# Signal the whole process group: the wrapper forked `codex`, so killing the
+# wrapper alone leaves the real worker running. Single-pid fallback for shells
+# that reject the group form.
+kill_worker_group() { kill -9 -- -"$1" 2>/dev/null || kill -9 "$1" 2>/dev/null; }
 
 MODE="launch"
 WORKERS=""
@@ -184,6 +224,65 @@ launch_workers() {
   cp "$RUN_DIR/pids" "$RUN_DIR/pids.all"
 }
 
+# A stalled worker (exit-code 125, no status yet) is relaunched with the same
+# brief in the same worktree — fresh session, one reasoning-effort step lower.
+# Fresh session, not `resume`: the stalled session's transport state is exactly
+# what cannot be trusted. The worktree is left as the stalled attempt left it;
+# briefs describe an end state, so a partial attempt is a head start, not a
+# hazard. Prior attempt logs are kept as *-attempt-N files.
+#
+# Returns 0 if anything was relaunched.
+relaunch_stalled() {
+  local round="$1" slug w wt brief pid n eff relaunched=0 stalled=()
+  # Scan before touching anything: truncating `pids` on a run with no stalls
+  # would erase the just-finished workers' records, which --wait re-attach and
+  # the pid-per-worker bookkeeping still depend on.
+  while read -r slug; do
+    [ -n "$slug" ] || continue
+    w="$OUT_DIR/$slug"
+    [ -f "$w/status" ] && continue                       # already classified
+    [ "$(cat "$w/exit-code" 2>/dev/null)" = "125" ] || continue
+    stalled+=("$slug")
+  done < <(roster)
+  [ "${#stalled[@]}" -gt 0 ] || return 1
+
+  : > "$RUN_DIR/pids"
+  for slug in "${stalled[@]}"; do
+    w="$OUT_DIR/$slug"
+    wt="$WORKTREE_ROOT/$slug"
+    brief="$(cat "$w/brief" 2>/dev/null)"
+    [ -f "$brief" ] || { printf 'sol-parallel: %s: brief missing, cannot relaunch\n' "$slug" >&2; continue; }
+
+    n=1
+    while [ -e "$w/events-attempt-$n.jsonl" ]; do n=$((n + 1)); done
+    mv "$w/events.jsonl" "$w/events-attempt-$n.jsonl" 2>/dev/null
+    mv "$w/stderr.txt"   "$w/stderr-attempt-$n.txt"   2>/dev/null
+    mv "$w/report.md"    "$w/report-attempt-$n.md"    2>/dev/null
+    mv "$w/stall-reason" "$w/stall-reason-attempt-$n" 2>/dev/null
+
+    eff="$(next_effort "$(cat "$w/effort" 2>/dev/null || echo "$EFFORT")")"
+    printf '%s\n' "$eff" > "$w/effort"
+    printf '%s\n' "$round" > "$w/stall-retries"
+    printf 'sol-parallel: %s: relaunching after stall (attempt %d, effort %s)\n' \
+      "$slug" $((n + 1)) "$eff" >&2
+
+    rm -f "$w/exit-code"
+    date +%s > "$w/started-at"
+    nohup bash -c '
+      codex exec --json -m "$1" -c model_reasoning_effort="$2" \
+        -s workspace-write --color never -C "$3" \
+        -o "$4/report.md" - < "$5" \
+        > "$4/events.jsonl" 2> "$4/stderr.txt"
+      printf "%s\n" "$?" > "$4/exit-code"
+    ' _ "$MODEL" "$eff" "$wt" "$w" "$brief" >/dev/null 2>&1 &
+    pid=$!
+    disown "$pid" 2>/dev/null
+    printf '%s\t%s\n' "$slug" "$pid" >> "$RUN_DIR/pids"
+    relaunched=1
+  done
+  [ "$relaunched" -eq 1 ]
+}
+
 resume_workers() {
   local slug w pid n pending=0
   : > "$RUN_DIR/pids"
@@ -209,9 +308,12 @@ resume_workers() {
     rm -f "$w/exit-code" "$w/status" "$w/files-changed" "$w/commit"
     nohup bash -c '
       cd "$3" || exit 2
+      # </dev/null: codex exec hangs forever on an open pipe stdin with no
+      # writer (openai/codex#20919); the launch path is safe because it reads
+      # the brief from stdin, but resume passes the prompt as an argument.
       codex exec resume "$6" --json -m "$1" -c model_reasoning_effort="$2" \
         -o "$4/report.md" "$(cat "$5")" \
-        > "$4/events.jsonl" 2> "$4/stderr.txt"
+        > "$4/events.jsonl" 2> "$4/stderr.txt" < /dev/null
       printf "%s\n" "$?" > "$4/exit-code"
     ' _ "$MODEL" "$EFFORT" "$WORKTREE_ROOT/$slug" "$w" "$w/correction-$n.md" \
         "$(cat "$w/session-id")" >/dev/null 2>&1 &
@@ -276,7 +378,19 @@ post_process() {
     code="$(cat "$w/exit-code" 2>/dev/null || echo 1)"
     session=""; commit=""; files=""
 
-    if [ ! -s "$w/events.jsonl" ]; then
+    if [ "$code" = "125" ]; then
+      # Stall-killed by the watchdog. Classified before the empty-events check:
+      # a worker stalled before its very first event (e.g. the codex stdin
+      # hang, openai/codex#20919) has an empty log but is a stall, not a
+      # failed launch — the distinction drives the retry ladder and report.
+      status="stalled"
+      if [ -s "$w/events.jsonl" ]; then
+        session="$(head -1 "$w/events.jsonl" \
+          | python3 -c 'import json,sys; print(json.loads(sys.stdin.readline() or "{}").get("thread_id",""))' \
+          2>/dev/null)"
+        printf '%s\n' "$session" > "$w/session-id"
+      fi
+    elif [ ! -s "$w/events.jsonl" ]; then
       status="failed-launch"
     else
       session="$(head -1 "$w/events.jsonl" \
@@ -362,6 +476,7 @@ write_summary() {
   SLUG_LIST="$(printf '%s\n' "${SLUGS[@]}")" \
   WT_LIST="$(printf '%s\n' "${WORKTREES[@]}")" \
   BRIEF_LIST="$(printf '%s\n' "${BRIEF_OF[@]}")" \
+  EFFORT_DEFAULT="$EFFORT" \
   python3 - <<'PY'
 import json, os, pathlib
 
@@ -394,6 +509,9 @@ for slug, wt, brief in zip(slugs, wts, briefs):
         "commit": read(w / "commit"),
         "files_changed": files,
         "elapsed_seconds": int(read(w / "elapsed") or 0),
+        "effort_used": read(w / "effort") or os.environ.get("EFFORT_DEFAULT", ""),
+        "stall_retries": int(read(w / "stall-retries") or 0),
+        "stall_reason": read(w / "stall-reason"),
         "events_path": str(w / "events.jsonl"),
         "report_path": str(w / "report.md"),
         "stderr_path": str(w / "stderr.txt"),
@@ -406,7 +524,7 @@ PY
 }
 
 wait_for_workers() {
-  local block="$1" slug pid started now live
+  local block="$1" slug pid started now live stall_reason ev last
   while :; do
     live=0
     while read -r slug; do
@@ -419,15 +537,43 @@ wait_for_workers() {
         started="$(cat "$OUT_DIR/$slug/started-at" 2>/dev/null || echo 0)"
         now="$(date +%s)"
         if [ "$started" -gt 0 ] && [ $((now - started)) -gt "$WORKER_TIMEOUT" ]; then
-          # Signal the whole process group: the wrapper forked `codex`, so
-          # killing the wrapper alone leaves the real worker running.
-          kill -9 -- -"$pid" 2>/dev/null || kill -9 "$pid" 2>/dev/null
+          kill_worker_group "$pid"
           # Same shape as the re-stat below: a worker that finished in the
           # instant between the liveness check and this kill has already
           # recorded its real result, and 124 would overwrite it with a
           # fabricated timeout.
           [ -s "$OUT_DIR/$slug/exit-code" ] \
             || printf '124\n' > "$OUT_DIR/$slug/exit-code"
+          continue
+        fi
+        # Stall watchdog. The absolute cap above cannot tell a worker deep in
+        # productive silence from one that hung after `turn.started` and will
+        # never speak again (a known codex failure shape at high reasoning
+        # effort: openai/codex#24260, #23807 — its internal stream retries can
+        # sit silent for many minutes). The event log is the heartbeat:
+        #   - nothing substantive yet → allow FIRST_EVENT_TIMEOUT from launch
+        #     (long: xhigh legitimately thinks silently before its first item)
+        #   - substantive events exist → allow IDLE_TIMEOUT since the last
+        #     write of any kind (mtime advances with every event)
+        # Exit code 125 marks the kill as a stall so post_process can class it
+        # `stalled` and the retry ladder can tell it apart from `timed-out`.
+        stall_reason=""
+        ev="$OUT_DIR/$slug/events.jsonl"
+        if has_substantive_event "$ev"; then
+          last="$(mtime_of "$ev")"
+          if [ "$last" -gt 0 ] && [ $((now - last)) -gt "$IDLE_TIMEOUT" ]; then
+            stall_reason="no events for $((now - last))s (idle budget ${IDLE_TIMEOUT}s)"
+          fi
+        elif [ "$started" -gt 0 ] && [ $((now - started)) -gt "$FIRST_EVENT_TIMEOUT" ]; then
+          stall_reason="no substantive event $((now - started))s after launch (budget ${FIRST_EVENT_TIMEOUT}s)"
+        fi
+        if [ -n "$stall_reason" ]; then
+          kill_worker_group "$pid"
+          if [ ! -s "$OUT_DIR/$slug/exit-code" ]; then
+            printf '%s\n' "$stall_reason" > "$OUT_DIR/$slug/stall-reason"
+            printf '125\n' > "$OUT_DIR/$slug/exit-code"
+            printf 'sol-parallel: %s: stalled — %s\n' "$slug" "$stall_reason" >&2
+          fi
           continue
         fi
         live=$((live + 1))
@@ -603,6 +749,15 @@ if [ "$MODE" = "launch" ]; then
   [ "$DRY_RUN" -eq 1 ] && exit "$setup_status"
   launch_workers
   wait_for_workers 1
+  # Stall retry ladder: each round relaunches every stalled worker one effort
+  # step lower, then waits again. Bounded by SOL_STALL_RETRIES; workers that
+  # stall with no rounds left fall through to post_process as `stalled`.
+  stall_round=0
+  while [ "$stall_round" -lt "$STALL_RETRIES" ]; do
+    stall_round=$((stall_round + 1))
+    relaunch_stalled "$stall_round" || break
+    wait_for_workers 1
+  done
   post_process
   write_summary
 fi

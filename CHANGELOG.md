@@ -4,6 +4,35 @@ All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.0] — 2026-08-15
+
+### Added
+
+- Inactivity watchdog for parallel workers. The absolute `SOL_WORKER_TIMEOUT`
+  could not tell a worker deep in silent reasoning from one that hung after
+  `turn.started` and would never speak again — a known codex failure shape at
+  high reasoning effort (openai/codex#24260, #23807) that burned a full
+  45-minute budget doing nothing. The wait loop now uses the worker's
+  `events.jsonl` as a heartbeat with two budgets: `SOL_FIRST_EVENT_TIMEOUT`
+  (default 900s) until the first substantive event, and `SOL_IDLE_TIMEOUT`
+  (default 600s) between events thereafter. A tripped watchdog kills the
+  worker's process group and records the new `stalled` status (exit code 125)
+  with a `stall-reason`, distinct from `timed-out`.
+- Stall retry ladder. A stalled worker is relaunched with the same brief in the
+  same worktree — fresh session, one reasoning-effort step lower (`xhigh → high
+  → medium → low`) — up to `SOL_STALL_RETRIES` times (default 1). Prior
+  attempts' logs are archived as `*-attempt-N` files; `summary.json` gains
+  `effort_used`, `stall_retries`, and `stall_reason` per worker.
+- Effort guidance in SKILL.md: `high` for mechanical briefs (moves,
+  scaffolding, renames), `xhigh` only for algorithmically hard ones; and a
+  single-worker instruction to treat a silent event log as a stall, not
+  progress.
+
+### Fixed
+
+- `codex exec resume` in parallel mode now redirects stdin from `/dev/null`;
+  codex hangs forever on an open pipe stdin with no writer (openai/codex#20919).
+
 ## [1.3.0] — 2026-08-10
 
 ### Added

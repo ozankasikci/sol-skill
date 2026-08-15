@@ -78,6 +78,44 @@ stamp() {
     "$slug" "$1" >> "$FAKE_STAMPS"
 }
 stamp start
+# Stall simulation for the watchdog tests. FAKE_STALL_MODE emits the exact
+# event shape of a hung real worker -- prelude bookkeeping (and optionally one
+# substantive item), then silence -- and sleeps until killed. FAKE_STALL_EFFORTS
+# stalls only when the invocation's reasoning effort is in the list, so a
+# downgraded retry proceeds normally.
+effort=""
+for arg in "$@"; do
+  case "$arg" in model_reasoning_effort=*) effort="${arg#model_reasoning_effort=}" ;; esac
+done
+want_stall=""
+[ -n "${FAKE_STALL_MODE:-}" ] && want_stall=1
+if [ -n "${FAKE_STALL_EFFORTS:-}" ]; then
+  case " $FAKE_STALL_EFFORTS " in
+    *" $effort "*) want_stall=1 ;;
+    *) want_stall="" ;;
+  esac
+fi
+if [ -n "$want_stall" ]; then
+  printf '{"type":"thread.started","thread_id":"%s"}\n' "${FAKE_THREAD:-019f-$slug}"
+  printf '{"type":"turn.started"}\n'
+  if [ "${FAKE_STALL_MODE:-prelude}" = "after-item" ]; then
+    printf '{"type":"item.completed","item":{"type":"command_execution"}}\n'
+  fi
+  sleep "${FAKE_STALL_SLEEP:-600}"
+  exit 0
+fi
+# Heartbeat mode: a slow but healthy worker that proves liveness by emitting a
+# substantive event every second before finishing normally.
+if [ -n "${FAKE_HEARTBEAT_SECS:-}" ]; then
+  printf '{"type":"thread.started","thread_id":"%s"}\n' "${FAKE_THREAD:-019f-$slug}"
+  printf '{"type":"turn.started"}\n'
+  hb=0
+  while [ "$hb" -lt "$FAKE_HEARTBEAT_SECS" ]; do
+    printf '{"type":"item.completed","item":{"type":"reasoning","beat":%d}}\n' "$hb"
+    sleep 1
+    hb=$((hb + 1))
+  done
+fi
 [ -n "${FAKE_SLEEP:-}" ] && sleep "$FAKE_SLEEP"
 stamp end
 if [ -z "${FAKE_EMPTY:-}" ]; then
@@ -1380,6 +1418,163 @@ with tempfile.TemporaryDirectory() as tmp:
     check("already removed" in r.stdout,
           f"says the worktree is already gone rather than staying silent about it "
           f"(stdout: {r.stdout!r})")
+
+def stall_env(bin_dir: pathlib.Path, **overrides: str) -> dict:
+    env = dict(os.environ)
+    env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
+    for k in ("SOL_MAX_WORKERS", "SOL_WORKTREE_SETUP", "SOL_WORKER_TIMEOUT",
+              "SOL_FIRST_EVENT_TIMEOUT", "SOL_IDLE_TIMEOUT", "SOL_STALL_RETRIES",
+              "SOL_EFFORT"):
+        env.pop(k, None)
+    env.update(overrides)
+    return env
+
+
+print("stall watchdog: prelude-only worker is killed and classed stalled")
+with tempfile.TemporaryDirectory() as tmp:
+    root = pathlib.Path(tmp)
+    bin_dir = root / "bin"
+    install_fake_codex(bin_dir)
+    repo = make_repo(root / "repo")
+    run_dir = root / "run"
+    write_tasks(run_dir, "hung")
+    env = stall_env(bin_dir, FAKE_STALL_MODE="prelude",
+                    SOL_FIRST_EVENT_TIMEOUT="3", SOL_STALL_RETRIES="0")
+
+    import time
+    t0 = time.time()
+    try:
+        r = subprocess.run(
+            ["bash", str(SCRIPT), "--workers", "1", str(run_dir)],
+            cwd=repo, capture_output=True, text=True, check=False, env=env,
+            timeout=25,
+        )
+        elapsed = time.time() - t0
+        w = run_dir / "workers" / "hung"
+        check(elapsed < 15,
+              f"stalled worker is killed by the first-event budget, not the 600s sleep (took {elapsed:.1f}s)")
+        check(r.returncode == 1, "a stalled worker makes the run exit 1")
+        check((w / "exit-code").read_text().strip() == "125",
+              "records exit code 125 for a stalled worker")
+        check((w / "status").read_text().strip() == "stalled",
+              f"classifies the worker `stalled` (got {(w / 'status').read_text().strip()!r})")
+        reason = (w / "stall-reason").read_text().strip() if (w / "stall-reason").exists() else ""
+        check("no substantive event" in reason,
+              f"stall-reason names the first-event budget (got {reason!r})")
+        summary = json.loads((run_dir / "summary.json").read_text())
+        check(summary["workers"][0]["status"] == "stalled"
+              and summary["workers"][0]["stall_reason"] != "",
+              "summary.json carries status=stalled and the stall reason")
+    except subprocess.TimeoutExpired:
+        for label in ("stalled worker killed promptly", "stalled run exits 1",
+                      "exit code 125", "status stalled", "stall reason recorded",
+                      "summary carries stalled"):
+            check(False, f"{label} (run timed out instead)")
+
+    time.sleep(1)
+    stray = subprocess.run(
+        ["pgrep", "-f", str(root)], capture_output=True, text=True, check=False
+    )
+    check(stray.returncode == 1,
+          f"no stray codex/sleep descendant survives the stall kill "
+          f"(pgrep: {stray.stdout!r})")
+
+print("stall watchdog: silence after a substantive event trips the idle budget")
+with tempfile.TemporaryDirectory() as tmp:
+    root = pathlib.Path(tmp)
+    bin_dir = root / "bin"
+    install_fake_codex(bin_dir)
+    repo = make_repo(root / "repo")
+    run_dir = root / "run"
+    write_tasks(run_dir, "quiet")
+    env = stall_env(bin_dir, FAKE_STALL_MODE="after-item",
+                    SOL_FIRST_EVENT_TIMEOUT="60", SOL_IDLE_TIMEOUT="3",
+                    SOL_STALL_RETRIES="0")
+    try:
+        r = subprocess.run(
+            ["bash", str(SCRIPT), "--workers", "1", str(run_dir)],
+            cwd=repo, capture_output=True, text=True, check=False, env=env,
+            timeout=25,
+        )
+        w = run_dir / "workers" / "quiet"
+        check(r.returncode == 1, "an idle-stalled worker makes the run exit 1")
+        check((w / "status").read_text().strip() == "stalled",
+              "idle silence after a substantive event is classed stalled")
+        reason = (w / "stall-reason").read_text().strip() if (w / "stall-reason").exists() else ""
+        check("idle budget" in reason,
+              f"stall-reason names the idle budget (got {reason!r})")
+    except subprocess.TimeoutExpired:
+        for label in ("idle-stalled run exits 1", "idle stall classed stalled",
+                      "idle stall reason"):
+            check(False, f"{label} (run timed out instead)")
+
+print("stall retry ladder: relaunch one effort lower recovers the worker")
+with tempfile.TemporaryDirectory() as tmp:
+    root = pathlib.Path(tmp)
+    bin_dir = root / "bin"
+    install_fake_codex(bin_dir)
+    repo = make_repo(root / "repo")
+    run_dir = root / "run"
+    write_tasks(run_dir, "flaky")
+    arglog = root / "args.log"
+    env = stall_env(bin_dir, FAKE_STALL_EFFORTS="xhigh", FAKE_ARGLOG=str(arglog),
+                    SOL_FIRST_EVENT_TIMEOUT="3", SOL_STALL_RETRIES="1")
+    try:
+        r = subprocess.run(
+            ["bash", str(SCRIPT), "--workers", "1", str(run_dir)],
+            cwd=repo, capture_output=True, text=True, check=False, env=env,
+            timeout=40,
+        )
+        w = run_dir / "workers" / "flaky"
+        check(r.returncode == 0,
+              f"run recovers to exit 0 after the downgraded retry (stderr: {r.stderr[:200]})")
+        check((w / "status").read_text().strip() == "ok",
+              "relaunched worker finishes ok")
+        check((w / "events-attempt-1.jsonl").exists(),
+              "the stalled attempt's event log is archived, not overwritten")
+        args = arglog.read_text()
+        check("model_reasoning_effort=xhigh" in args
+              and "model_reasoning_effort=high" in args,
+              f"codex was invoked at xhigh then relaunched at high (args: {args!r})")
+        summary = json.loads((run_dir / "summary.json").read_text())
+        wk = summary["workers"][0]
+        check(wk["effort_used"] == "high" and wk["stall_retries"] == 1,
+              f"summary records effort_used=high, stall_retries=1 "
+              f"(got {wk['effort_used']!r}, {wk['stall_retries']})")
+        check(wk["status"] == "ok" and wk["commit"],
+              "summary shows the recovered worker committed real work")
+    except subprocess.TimeoutExpired:
+        for label in ("retry run exits 0", "relaunched worker ok",
+                      "attempt log archived", "xhigh then high",
+                      "summary effort/retries", "recovered commit"):
+            check(False, f"{label} (run timed out instead)")
+
+print("stall watchdog: heartbeating worker is never killed")
+with tempfile.TemporaryDirectory() as tmp:
+    root = pathlib.Path(tmp)
+    bin_dir = root / "bin"
+    install_fake_codex(bin_dir)
+    repo = make_repo(root / "repo")
+    run_dir = root / "run"
+    write_tasks(run_dir, "steady")
+    env = stall_env(bin_dir, FAKE_HEARTBEAT_SECS="5",
+                    SOL_FIRST_EVENT_TIMEOUT="3", SOL_IDLE_TIMEOUT="3",
+                    SOL_STALL_RETRIES="0")
+    try:
+        r = subprocess.run(
+            ["bash", str(SCRIPT), "--workers", "1", str(run_dir)],
+            cwd=repo, capture_output=True, text=True, check=False, env=env,
+            timeout=40,
+        )
+        w = run_dir / "workers" / "steady"
+        check(r.returncode == 0,
+              f"a slow worker emitting steady events outlives budgets shorter than its runtime "
+              f"(stderr: {r.stderr[:200]})")
+        check((w / "status").read_text().strip() == "ok",
+              "heartbeating worker finishes ok, never stall-killed")
+    except subprocess.TimeoutExpired:
+        for label in ("heartbeating worker survives", "heartbeating worker ok"):
+            check(False, f"{label} (run timed out instead)")
 
 print()
 if failures:

@@ -31,6 +31,10 @@ flow below.
 | `--workers N` | — | Requested worker count for this run, capped by the ceiling below; its presence engages parallel mode |
 | `SOL_MAX_WORKERS` | `3` | Ceiling on worker count — caps `--workers` and is the count used when `--workers` is absent; exceeding it is refused, never clamped |
 | `SOL_WORKTREE_SETUP` | unset | Command run in each fresh worktree (`npm ci`, `uv sync`) |
+| `SOL_EFFORT` | `xhigh` | Reasoning effort for workers. Prefer `high` for mechanical work (moves, scaffolding, renames) — stalls are effort-correlated and xhigh buys nothing there; keep `xhigh` for algorithmically hard briefs |
+| `SOL_FIRST_EVENT_TIMEOUT` | `900` | Parallel mode: seconds a worker may sit with nothing but thread/turn bookkeeping in its event log before it is stall-killed |
+| `SOL_IDLE_TIMEOUT` | `600` | Parallel mode: seconds without any new event after real work has started before a worker is stall-killed |
+| `SOL_STALL_RETRIES` | `1` | Parallel mode: automatic relaunches of a stalled worker, each a fresh session one effort step lower (`xhigh → high → medium → low`) |
 
 **Task tracking:** If harness task tools are available, call TaskCreate at the start (short title from the request, status in_progress), TaskUpdate once per phase transition (planning → Sol implementing → reviewing → corrections), and TaskUpdate to completed in the final report — or leave it in_progress with a note if blocked. Keep updates to one line; skip entirely if the tools are unavailable.
 
@@ -66,7 +70,9 @@ Structure the brief as compact XML blocks (GPT-5.x responds better to explicit c
 - `<output_contract>` — final message ends with: changed files, exact commands run, and their results.
 
 Execution notes:
+- Match effort to the task: `high` for mechanical work (file moves, scaffolding, renames, config plumbing), `xhigh` only for algorithmically hard briefs. Stalls are effort-correlated (openai/codex#24260, #23807) and xhigh buys nothing on mechanical work.
 - xhigh runs are slow, commonly 5–15 minutes. Use a 10-minute Bash timeout; for large tasks run in the background and wait for completion.
+- **Silence is not progress.** Codex can hang after `turn.started` and never speak again — a known failure shape at high effort. If `sol-events.jsonl` has gained no new events in ~10 minutes (check its mtime, don't read it), kill the process and relaunch the same brief in a fresh session one effort step lower. Parallel mode does this automatically; single-worker mode is your job.
 - Read only `sol-report.md` for Sol's final report — never trust it as verification. Do not read `sol-events.jsonl` or `sol-stderr.txt` unless the run failed — and then use the watcher's `--once` summary rather than the raw stream.
 
 ## 3. Review the diff, not the summary
