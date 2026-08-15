@@ -59,6 +59,34 @@ has_substantive_event() {
   grep -qvE '"type"[[:space:]]*:[[:space:]]*"(thread\.|turn\.|session)' "$1"
 }
 
+# True when the log's last state includes a command execution or MCP tool call
+# that started and has not completed: codex emits nothing while a command runs,
+# so this silence is a build in progress, not a hang. The idle budget must not
+# apply — a command hung forever is the absolute cap's job. Matching is by item
+# id, so interleaved items resolve correctly.
+in_flight_item() {
+  [ -s "$1" ] || return 1
+  python3 - "$1" <<'PY'
+import json, sys
+started, done = set(), set()
+with open(sys.argv[1]) as fh:
+    for line in fh:
+        try:
+            e = json.loads(line)
+        except Exception:
+            continue
+        item = e.get("item") or {}
+        if item.get("type") not in ("command_execution", "mcp_tool_call"):
+            continue
+        t = e.get("type")
+        if t == "item.started":
+            started.add(item.get("id"))
+        elif t == "item.completed":
+            done.add(item.get("id"))
+sys.exit(0 if started - done else 1)
+PY
+}
+
 # Signal the whole process group: the wrapper forked `codex`, so killing the
 # wrapper alone leaves the real worker running. Single-pid fallback for shells
 # that reject the group form.
@@ -561,7 +589,8 @@ wait_for_workers() {
         ev="$OUT_DIR/$slug/events.jsonl"
         if has_substantive_event "$ev"; then
           last="$(mtime_of "$ev")"
-          if [ "$last" -gt 0 ] && [ $((now - last)) -gt "$IDLE_TIMEOUT" ]; then
+          if [ "$last" -gt 0 ] && [ $((now - last)) -gt "$IDLE_TIMEOUT" ] \
+             && ! in_flight_item "$ev"; then
             stall_reason="no events for $((now - last))s (idle budget ${IDLE_TIMEOUT}s)"
           fi
         elif [ "$started" -gt 0 ] && [ $((now - started)) -gt "$FIRST_EVENT_TIMEOUT" ]; then

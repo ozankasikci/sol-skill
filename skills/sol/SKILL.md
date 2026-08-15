@@ -72,7 +72,7 @@ Structure the brief as compact XML blocks (GPT-5.x responds better to explicit c
 Execution notes:
 - Match effort to the task: `high` for mechanical work (file moves, scaffolding, renames, config plumbing), `xhigh` only for algorithmically hard briefs. Stalls are effort-correlated (openai/codex#24260, #23807) and xhigh buys nothing on mechanical work.
 - xhigh runs are slow, commonly 5–15 minutes. Use a 10-minute Bash timeout; for large tasks run in the background and wait for completion.
-- **Silence is not progress.** Codex can hang after `turn.started` and never speak again — a known failure shape at high effort. If `sol-events.jsonl` has gained no new events in ~10 minutes (check its mtime, don't read it), kill the process and relaunch the same brief in a fresh session one effort step lower. Parallel mode does this automatically; single-worker mode is your job.
+- **Silence is not progress.** Codex can hang after `turn.started` and never speak again — a known failure shape at high effort. If `sol-events.jsonl` has gained no new events in ~10 minutes (check its mtime, don't read it), first check the log's tail for an `item.started` command with no matching `item.completed` — that silence is a running build and is fine (the 30-minute absolute cap is its backstop). Only with nothing in flight: kill the process and relaunch the same brief in a fresh session one effort step lower. Parallel mode does all of this automatically; single-worker mode is your job.
 - Read only `sol-report.md` for Sol's final report — never trust it as verification. Do not read `sol-events.jsonl` or `sol-stderr.txt` unless the run failed — and then use the watcher's `--once` summary rather than the raw stream.
 
 ## 3. Review the diff, not the summary

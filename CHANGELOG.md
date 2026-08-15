@@ -17,7 +17,11 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   (default 900s) until the first substantive event, and `SOL_IDLE_TIMEOUT`
   (default 600s) between events thereafter. A tripped watchdog kills the
   worker's process group and records the new `stalled` status (exit code 125)
-  with a `stall-reason`, distinct from `timed-out`.
+  with a `stall-reason`, distinct from `timed-out`. Silence while a command
+  execution or MCP tool call is in flight (`item.started` with no matching
+  `item.completed`) is exempt from the idle budget — codex emits nothing while
+  a command runs, so that silence is a build in progress, not a hang; a command
+  hung forever falls to the absolute cap as `timed-out`.
 - Stall retry ladder. A stalled worker is relaunched with the same brief in the
   same worktree — fresh session, one reasoning-effort step lower (`xhigh → high
   → medium → low`) — up to `SOL_STALL_RETRIES` times (default 1). Prior

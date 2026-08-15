@@ -99,10 +99,24 @@ if [ -n "$want_stall" ]; then
   printf '{"type":"thread.started","thread_id":"%s"}\n' "${FAKE_THREAD:-019f-$slug}"
   printf '{"type":"turn.started"}\n'
   if [ "${FAKE_STALL_MODE:-prelude}" = "after-item" ]; then
-    printf '{"type":"item.completed","item":{"type":"command_execution"}}\n'
+    printf '{"type":"item.completed","item":{"id":"item_0","type":"command_execution"}}\n'
+  fi
+  if [ "${FAKE_STALL_MODE:-prelude}" = "in-command" ]; then
+    # A command that started and never completes: silence here is a running
+    # (possibly hung) command, never a codex transport stall.
+    printf '{"type":"item.started","item":{"id":"item_0","type":"command_execution","command":"slow-build"}}\n'
   fi
   sleep "${FAKE_STALL_SLEEP:-600}"
   exit 0
+fi
+# Quiet-command mode: a real build in miniature -- the command starts, runs
+# silently for FAKE_QUIET_CMD_SECS, completes, and the worker finishes ok.
+if [ -n "${FAKE_QUIET_CMD_SECS:-}" ]; then
+  printf '{"type":"thread.started","thread_id":"%s"}\n' "${FAKE_THREAD:-019f-$slug}"
+  printf '{"type":"turn.started"}\n'
+  printf '{"type":"item.started","item":{"id":"item_0","type":"command_execution","command":"quiet-build"}}\n'
+  sleep "$FAKE_QUIET_CMD_SECS"
+  printf '{"type":"item.completed","item":{"id":"item_0","type":"command_execution","exit_code":0}}\n'
 fi
 # Heartbeat mode: a slow but healthy worker that proves liveness by emitting a
 # substantive event every second before finishing normally.
@@ -1547,6 +1561,66 @@ with tempfile.TemporaryDirectory() as tmp:
         for label in ("retry run exits 0", "relaunched worker ok",
                       "attempt log archived", "xhigh then high",
                       "summary effort/retries", "recovered commit"):
+            check(False, f"{label} (run timed out instead)")
+
+print("stall watchdog: a quiet command outlasting the idle budget is not a stall")
+with tempfile.TemporaryDirectory() as tmp:
+    root = pathlib.Path(tmp)
+    bin_dir = root / "bin"
+    install_fake_codex(bin_dir)
+    repo = make_repo(root / "repo")
+    run_dir = root / "run"
+    write_tasks(run_dir, "builder")
+    env = stall_env(bin_dir, FAKE_QUIET_CMD_SECS="6",
+                    SOL_FIRST_EVENT_TIMEOUT="60", SOL_IDLE_TIMEOUT="3",
+                    SOL_STALL_RETRIES="0")
+    try:
+        r = subprocess.run(
+            ["bash", str(SCRIPT), "--workers", "1", str(run_dir)],
+            cwd=repo, capture_output=True, text=True, check=False, env=env,
+            timeout=40,
+        )
+        w = run_dir / "workers" / "builder"
+        check(r.returncode == 0,
+              f"a 6s-silent command survives a 3s idle budget because it is in flight "
+              f"(stderr: {r.stderr[:200]})")
+        check((w / "status").read_text().strip() == "ok",
+              "quiet-build worker finishes ok, never stall-killed mid-command")
+    except subprocess.TimeoutExpired:
+        for label in ("quiet command survives idle budget", "quiet-build worker ok"):
+            check(False, f"{label} (run timed out instead)")
+
+print("stall watchdog: a command hung forever falls to the absolute cap, not the idle budget")
+with tempfile.TemporaryDirectory() as tmp:
+    root = pathlib.Path(tmp)
+    bin_dir = root / "bin"
+    install_fake_codex(bin_dir)
+    repo = make_repo(root / "repo")
+    run_dir = root / "run"
+    write_tasks(run_dir, "wedged")
+    env = stall_env(bin_dir, FAKE_STALL_MODE="in-command",
+                    SOL_FIRST_EVENT_TIMEOUT="60", SOL_IDLE_TIMEOUT="3",
+                    SOL_WORKER_TIMEOUT="8", SOL_STALL_RETRIES="0")
+    import time
+    t0 = time.time()
+    try:
+        r = subprocess.run(
+            ["bash", str(SCRIPT), "--workers", "1", str(run_dir)],
+            cwd=repo, capture_output=True, text=True, check=False, env=env,
+            timeout=30,
+        )
+        elapsed = time.time() - t0
+        w = run_dir / "workers" / "wedged"
+        check(elapsed >= 8,
+              f"in-flight command is exempt from the 3s idle budget (killed at {elapsed:.1f}s)")
+        check((w / "exit-code").read_text().strip() == "124",
+              f"hung command is killed by the absolute cap as timed-out, not stalled "
+              f"(exit-code {(w / 'exit-code').read_text().strip()!r})")
+        check((w / "status").read_text().strip() == "timed-out",
+              "hung command classifies timed-out")
+    except subprocess.TimeoutExpired:
+        for label in ("in-flight exempt from idle budget", "hung command exit 124",
+                      "hung command timed-out"):
             check(False, f"{label} (run timed out instead)")
 
 print("stall watchdog: heartbeating worker is never killed")

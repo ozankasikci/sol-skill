@@ -104,7 +104,11 @@ pointed to below. It has one entry per worker in its `workers` array: `slug`, `b
   `<run-dir>/workers/<slug>/setup.log`.
 - `stalled` means the inactivity watchdog killed the worker: no substantive event
   within `SOL_FIRST_EVENT_TIMEOUT` of launch, or no event at all for
-  `SOL_IDLE_TIMEOUT` after work had started (`stall_reason` says which). The
+  `SOL_IDLE_TIMEOUT` after work had started (`stall_reason` says which). Silence
+  while a command execution or MCP tool call is in flight (an `item.started`
+  with no matching `item.completed`) never counts against the idle budget — a
+  quiet 15-minute build is not a stall; a command hung forever is caught by the
+  absolute `SOL_WORKER_TIMEOUT` and classed `timed-out` instead. The
   launcher already retried it `SOL_STALL_RETRIES` times, each attempt a fresh
   session one reasoning-effort step lower — `effort_used` and `stall_retries`
   record what happened, and each prior attempt's logs are archived as
