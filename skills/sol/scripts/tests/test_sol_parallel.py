@@ -505,6 +505,14 @@ with tempfile.TemporaryDirectory() as tmp:
         check(r.returncode == 1, "a timed-out worker makes the run exit 1")
         check((run_dir / "workers" / "slow" / "exit-code").read_text().strip() == "124",
               "records exit code 124 for a timed-out worker")
+        # The worker is killed mid-sleep, before it emits anything, so its event
+        # log is empty. Classified on the empty log alone it reads
+        # `failed-launch`, which the flow doc defines as a bad invocation or a
+        # missing binary — sending the reviewer after the wrong thing entirely.
+        st = (run_dir / "workers" / "slow" / "status").read_text().strip()
+        check(st == "timed-out",
+              f"a capped worker killed before its first event is timed-out, "
+              f"not failed-launch (got {st!r})")
     except subprocess.TimeoutExpired:
         check(False, "run terminates promptly instead of waiting out the 30s sleep (timed out instead)")
         check(False, "a timed-out worker makes the run exit 1 (timed out instead)")

@@ -415,12 +415,14 @@ post_process() {
     code="$(cat "$w/exit-code" 2>/dev/null || echo 1)"
     session=""; commit=""; files=""
 
-    if [ "$code" = "125" ]; then
-      # Stall-killed by the watchdog. Classified before the empty-events check:
-      # a worker stalled before its very first event (e.g. the codex stdin
-      # hang, openai/codex#20919) has an empty log but is a stall, not a
-      # failed launch — the distinction drives the retry ladder and report.
-      status="stalled"
+    if [ "$code" = "125" ] || [ "$code" = "124" ]; then
+      # Killed by a watchdog (125) or the optional absolute cap (124). Both are
+      # classified before the empty-events check: a worker killed before its
+      # very first event (a stall on the codex stdin hang, openai/codex#20919,
+      # or a cap that expired mid-think) has an empty log but was not a failed
+      # launch. Reporting it as one sends the reviewer hunting a bad invocation
+      # or a missing binary, and for 125 it also decides the retry ladder.
+      if [ "$code" = "125" ]; then status="stalled"; else status="timed-out"; fi
       if [ -s "$w/events.jsonl" ]; then
         session="$(head -1 "$w/events.jsonl" \
           | python3 -c 'import json,sys; print(json.loads(sys.stdin.readline() or "{}").get("thread_id",""))' \

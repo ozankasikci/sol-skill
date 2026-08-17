@@ -29,6 +29,15 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   whole task's is not. Such a kill classifies `stalled`, not `timed-out`, so it
   feeds the existing effort-downgrade retry ladder.
 
+### Fixed
+
+- A worker killed by an opted-in `SOL_WORKER_TIMEOUT` before emitting its first
+  event was classified `failed-launch` rather than `timed-out`, because the
+  empty-event-log rung was evaluated before the exit-code rung. `failed-launch`
+  is documented as a bad invocation or a missing binary, so the report sent the
+  reviewer after the wrong thing. Exit code 124 is now classified alongside 125
+  ahead of that rung, as stall kills already were.
+
 ## [1.4.0] — 2026-08-16
 
 ### Added
