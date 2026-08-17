@@ -495,8 +495,13 @@ with tempfile.TemporaryDirectory() as tmp:
             timeout=20,
         )
         elapsed = time.time() - t0
-        check(elapsed < 15,
-              f"run terminates promptly instead of waiting out the 30s sleep (took {elapsed:.1f}s)")
+        # Bound at 25, not 15: what this proves is that the cap killed the
+        # worker rather than the 30s sleep running to completion. A tighter
+        # bound measures machine load instead, and fails at load average 221
+        # while the kill worked perfectly — the same wall-clock-guessing
+        # mistake this release removes from the product.
+        check(elapsed < 25,
+              f"run terminates via the cap instead of waiting out the 30s sleep (took {elapsed:.1f}s)")
         check(r.returncode == 1, "a timed-out worker makes the run exit 1")
         check((run_dir / "workers" / "slow" / "exit-code").read_text().strip() == "124",
               "records exit code 124 for a timed-out worker")
@@ -1438,7 +1443,7 @@ def stall_env(bin_dir: pathlib.Path, **overrides: str) -> dict:
     env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
     for k in ("SOL_MAX_WORKERS", "SOL_WORKTREE_SETUP", "SOL_WORKER_TIMEOUT",
               "SOL_FIRST_EVENT_TIMEOUT", "SOL_IDLE_TIMEOUT", "SOL_STALL_RETRIES",
-              "SOL_EFFORT"):
+              "SOL_COMMAND_TIMEOUT", "SOL_EFFORT"):
         env.pop(k, None)
     env.update(overrides)
     return env
@@ -1590,7 +1595,39 @@ with tempfile.TemporaryDirectory() as tmp:
         for label in ("quiet command survives idle budget", "quiet-build worker ok"):
             check(False, f"{label} (run timed out instead)")
 
-print("stall watchdog: a command hung forever falls to the absolute cap, not the idle budget")
+print("absolute cap is opt-in: 0 disables it rather than killing instantly")
+with tempfile.TemporaryDirectory() as tmp:
+    root = pathlib.Path(tmp)
+    bin_dir = root / "bin"
+    install_fake_codex(bin_dir)
+    repo = make_repo(root / "repo")
+    run_dir = root / "run"
+    write_tasks(run_dir, "unhurried")
+    # 0 is the shipped default. Without the `[ "$WORKER_TIMEOUT" -gt 0 ]` guard,
+    # `now - started > 0` is true on the first poll, so every worker would be
+    # killed with 124 the instant it launched. This is the check that catches
+    # that, and it is why the guard exists rather than just changing a number.
+    env = stall_env(bin_dir, SOL_WORKER_TIMEOUT="0", FAKE_SLEEP="4",
+                    SOL_IDLE_TIMEOUT="60", SOL_FIRST_EVENT_TIMEOUT="60")
+    try:
+        r = subprocess.run(
+            ["bash", str(SCRIPT), "--workers", "1", str(run_dir)],
+            cwd=repo, capture_output=True, text=True, check=False, env=env,
+            timeout=60,
+        )
+        w = run_dir / "workers" / "unhurried"
+        code = (w / "exit-code").read_text().strip()
+        check(code == "0", f"a worker outliving no cap is not killed (exit-code {code!r})")
+        check((w / "status").read_text().strip() == "ok",
+              "worker classifies ok, not timed-out")
+        check(r.returncode == 0, "run exits 0 with the absolute cap disabled")
+    except subprocess.TimeoutExpired:
+        for label in ("a worker outliving no cap is not killed",
+                      "worker classifies ok, not timed-out",
+                      "run exits 0 with the absolute cap disabled"):
+            check(False, f"{label} (run timed out instead)")
+
+print("stall watchdog: a command hung forever is caught by the command budget")
 with tempfile.TemporaryDirectory() as tmp:
     root = pathlib.Path(tmp)
     bin_dir = root / "bin"
@@ -1598,9 +1635,12 @@ with tempfile.TemporaryDirectory() as tmp:
     repo = make_repo(root / "repo")
     run_dir = root / "run"
     write_tasks(run_dir, "wedged")
+    # No SOL_WORKER_TIMEOUT: the absolute cap is off by default now, so if the
+    # command budget does not fire, nothing kills this worker and the run hangs
+    # until the subprocess timeout below — which is the failure this asserts.
     env = stall_env(bin_dir, FAKE_STALL_MODE="in-command",
                     SOL_FIRST_EVENT_TIMEOUT="60", SOL_IDLE_TIMEOUT="3",
-                    SOL_WORKER_TIMEOUT="8", SOL_STALL_RETRIES="0")
+                    SOL_COMMAND_TIMEOUT="8", SOL_STALL_RETRIES="0")
     import time
     t0 = time.time()
     try:
@@ -1613,15 +1653,17 @@ with tempfile.TemporaryDirectory() as tmp:
         w = run_dir / "workers" / "wedged"
         check(elapsed >= 8,
               f"in-flight command is exempt from the 3s idle budget (killed at {elapsed:.1f}s)")
-        check((w / "exit-code").read_text().strip() == "124",
-              f"hung command is killed by the absolute cap as timed-out, not stalled "
+        check((w / "exit-code").read_text().strip() == "125",
+              f"hung command is killed by the command budget as a stall "
               f"(exit-code {(w / 'exit-code').read_text().strip()!r})")
-        check((w / "status").read_text().strip() == "timed-out",
-              "hung command classifies timed-out")
+        check((w / "status").read_text().strip() == "stalled",
+              "hung command classifies stalled")
+        check("command in flight" in (w / "stall-reason").read_text(),
+              "stall reason names the command budget")
     except subprocess.TimeoutExpired:
-        for label in ("in-flight exempt from idle budget", "hung command exit 124",
-                      "hung command timed-out"):
-            check(False, f"{label} (run timed out instead)")
+        for label in ("in-flight exempt from idle budget", "hung command exit 125",
+                      "hung command stalled", "stall reason names the command budget"):
+            check(False, f"{label} (run timed out instead — nothing killed the worker)")
 
 print("stall watchdog: heartbeating worker is never killed")
 with tempfile.TemporaryDirectory() as tmp:

@@ -63,9 +63,10 @@ bash <skill-dir>/scripts/sol-parallel.sh --workers N "$SCRATCHPAD/sol-run"
 This creates one git worktree and branch (`sol/<slug>`) per brief under
 `../.sol-worktrees/<repo-name>/<slug>` (a sibling of the repo, not inside it), runs
 `SOL_WORKTREE_SETUP` in each fresh worktree if set, launches one `codex exec` per
-worker, and **blocks until every worker finishes or is force-killed** by
-`SOL_WORKER_TIMEOUT` (default 1800s / 30 min, per worker) — so this single call can run
-far longer than one tool-call budget.
+worker, and **blocks until every worker finishes or is force-killed** by the
+inactivity watchdog — so this single call can run far longer than one tool-call budget.
+There is deliberately no default cap on how long a worker may take: a task's duration is
+not predictable, so any constant kills productive workers. What is bounded is silence.
 
 If the tool call itself times out before the script returns, the workers are still
 running unattended — that is not a failure, just an interrupted wait. Re-attach:
@@ -107,8 +108,10 @@ pointed to below. It has one entry per worker in its `workers` array: `slug`, `b
   `SOL_IDLE_TIMEOUT` after work had started (`stall_reason` says which). Silence
   while a command execution or MCP tool call is in flight (an `item.started`
   with no matching `item.completed`) never counts against the idle budget — a
-  quiet 15-minute build is not a stall; a command hung forever is caught by the
-  absolute `SOL_WORKER_TIMEOUT` and classed `timed-out` instead. The
+  quiet 15-minute build is not a stall. That exemption is bounded by
+  `SOL_COMMAND_TIMEOUT` (default 1800s), so a command that never returns is still
+  caught, as a stall rather than a timeout. `timed-out` appears only if you opt
+  into an absolute cap with `SOL_WORKER_TIMEOUT`, which is off by default. The
   launcher already retried it `SOL_STALL_RETRIES` times, each attempt a fresh
   session one reasoning-effort step lower — `effort_used` and `stall_retries`
   record what happened, and each prior attempt's logs are archived as

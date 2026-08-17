@@ -15,13 +15,20 @@
 #
 # Env: SOL_MAX_WORKERS (default 3)   ceiling on --workers
 #      SOL_WORKTREE_SETUP            command run in each fresh worktree
-#      SOL_WORKER_TIMEOUT (1800)     absolute per-worker wall-clock cap, seconds
+#      SOL_WORKER_TIMEOUT (0)        absolute per-worker wall-clock cap, seconds.
+#                                    0 = none, the default: a whole task's
+#                                    duration is not predictable, so any
+#                                    constant kills productive workers. The
+#                                    budgets below bound silence instead.
 #      SOL_FIRST_EVENT_TIMEOUT (900) kill a worker whose event log still holds
 #                                    nothing but thread/turn bookkeeping after
 #                                    this many seconds (codex hangs at high
 #                                    reasoning effort emit exactly that shape)
 #      SOL_IDLE_TIMEOUT (600)        kill a worker whose event log has gone
 #                                    this many seconds without a new event
+#      SOL_COMMAND_TIMEOUT (1800)    kill a worker whose in-flight command has
+#                                    produced nothing for this long. Bounds the
+#                                    exemption that lets long builds run silent.
 #      SOL_STALL_RETRIES (1)         automatic relaunches of a stalled worker,
 #                                    each one reasoning-effort step lower
 
@@ -29,9 +36,10 @@ set -uo pipefail
 
 MODEL="${SOL_MODEL:-gpt-5.6-sol}"
 EFFORT="${SOL_EFFORT:-xhigh}"
-WORKER_TIMEOUT="${SOL_WORKER_TIMEOUT:-1800}"
+WORKER_TIMEOUT="${SOL_WORKER_TIMEOUT:-0}"        # 0 = no absolute cap
 FIRST_EVENT_TIMEOUT="${SOL_FIRST_EVENT_TIMEOUT:-900}"
 IDLE_TIMEOUT="${SOL_IDLE_TIMEOUT:-600}"
+COMMAND_TIMEOUT="${SOL_COMMAND_TIMEOUT:-1800}"
 STALL_RETRIES="${SOL_STALL_RETRIES:-1}"
 
 die() { printf 'sol-parallel: %s\n' "$1" >&2; exit "${2:-2}"; }
@@ -62,8 +70,9 @@ has_substantive_event() {
 # True when the log's last state includes a command execution or MCP tool call
 # that started and has not completed: codex emits nothing while a command runs,
 # so this silence is a build in progress, not a hang. The idle budget must not
-# apply — a command hung forever is the absolute cap's job. Matching is by item
-# id, so interleaved items resolve correctly.
+# apply — a command that never returns is SOL_COMMAND_TIMEOUT's job, which
+# bounds this exemption. Matching is by item id, so interleaved items resolve
+# correctly.
 in_flight_item() {
   [ -s "$1" ] || return 1
   python3 - "$1" <<'PY'
@@ -564,7 +573,8 @@ wait_for_workers() {
       if kill -0 "$pid" 2>/dev/null; then
         started="$(cat "$OUT_DIR/$slug/started-at" 2>/dev/null || echo 0)"
         now="$(date +%s)"
-        if [ "$started" -gt 0 ] && [ $((now - started)) -gt "$WORKER_TIMEOUT" ]; then
+        if [ "$WORKER_TIMEOUT" -gt 0 ] && [ "$started" -gt 0 ] \
+           && [ $((now - started)) -gt "$WORKER_TIMEOUT" ]; then
           kill_worker_group "$pid"
           # Same shape as the re-stat below: a worker that finished in the
           # instant between the liveness check and this kill has already
@@ -589,9 +599,18 @@ wait_for_workers() {
         ev="$OUT_DIR/$slug/events.jsonl"
         if has_substantive_event "$ev"; then
           last="$(mtime_of "$ev")"
-          if [ "$last" -gt 0 ] && [ $((now - last)) -gt "$IDLE_TIMEOUT" ] \
-             && ! in_flight_item "$ev"; then
-            stall_reason="no events for $((now - last))s (idle budget ${IDLE_TIMEOUT}s)"
+          if [ "$last" -gt 0 ] && [ $((now - last)) -gt "$IDLE_TIMEOUT" ]; then
+            if ! in_flight_item "$ev"; then
+              stall_reason="no events for $((now - last))s (idle budget ${IDLE_TIMEOUT}s)"
+            elif [ "$COMMAND_TIMEOUT" -gt 0 ] \
+                 && [ $((now - last)) -gt "$COMMAND_TIMEOUT" ]; then
+              # The in-flight exemption below is what lets a long build run in
+              # silence. Unbounded, it also lets a command that will never
+              # return run forever. A single command's runtime is predictable
+              # in a way a whole task's is not, so this budget bounds the
+              # exemption without capping the task.
+              stall_reason="command in flight $((now - last))s with no output (command budget ${COMMAND_TIMEOUT}s)"
+            fi
           fi
         elif [ "$started" -gt 0 ] && [ $((now - started)) -gt "$FIRST_EVENT_TIMEOUT" ]; then
           stall_reason="no substantive event $((now - started))s after launch (budget ${FIRST_EVENT_TIMEOUT}s)"

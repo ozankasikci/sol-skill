@@ -4,6 +4,31 @@ All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.1] — 2026-08-17
+
+### Changed
+
+- The absolute per-worker cap `SOL_WORKER_TIMEOUT` is **off by default** (was
+  1800s). It asked a question nobody can answer in advance — "has this taken too
+  long?" — which requires knowing how long a task should take, the very thing you
+  delegate because you don't know. Any constant is too short for a scaffolding
+  brief and too long for a wedged one, so tuning it only trades false kills
+  against slower detection. Observed in the wild: a worker with 25 events and a
+  just-completed command execution, killed mid-task purely for elapsed time. The
+  inactivity watchdog added in 1.4.0 asks the answerable question instead — has
+  this stopped producing evidence of progress? — and is now the only automatic
+  killer. Set `SOL_WORKER_TIMEOUT` to a positive number if you want a hard budget.
+
+### Added
+
+- `SOL_COMMAND_TIMEOUT` (default 1800s) bounds the in-flight-command exemption.
+  1.4.0 exempted a running command from the idle budget so a quiet 15-minute
+  build would not be mistaken for a hang, which left a command that never returns
+  catchable only by the absolute cap. With that cap now off by default, this
+  budget closes the hole: a single command's runtime is predictable in a way a
+  whole task's is not. Such a kill classifies `stalled`, not `timed-out`, so it
+  feeds the existing effort-downgrade retry ladder.
+
 ## [1.4.0] — 2026-08-16
 
 ### Added
