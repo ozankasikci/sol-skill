@@ -46,7 +46,18 @@ die() { printf 'sol-parallel: %s\n' "$1" >&2; exit "${2:-2}"; }
 
 # BSD stat (macOS) then GNU stat; 0 for a missing file so age math never
 # explodes — callers treat 0 as "no heartbeat yet".
-mtime_of() { stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null || echo 0; }
+# GNU stat first, and validate the result is numeric. BSD `stat -f %m` gives the
+# mtime, but GNU's `-f` means --file-system: it prints a filesystem dump and
+# EXITS 0, so a BSD-first `||` chain never falls through on Linux. The garbage
+# then reached `[ "$last" -gt 0 ]` as a syntax error and silently disabled the
+# entire inactivity watchdog on every Linux host.
+mtime_of() {
+  local m
+  m="$(stat -c %Y "$1" 2>/dev/null)"
+  case "$m" in ''|*[!0-9]*) m="$(stat -f %m "$1" 2>/dev/null)" ;; esac
+  case "$m" in ''|*[!0-9]*) m=0 ;; esac
+  printf '%s' "$m"
+}
 
 # One reasoning-effort step down. Stalls are empirically effort-correlated
 # (openai/codex#24260, #23807), so a stalled worker retries lower, never equal.

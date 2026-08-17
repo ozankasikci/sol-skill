@@ -471,6 +471,31 @@ with tempfile.TemporaryDirectory() as tmp:
     check((run_dir / "workers" / "alpha" / "exit-code").read_text().strip() == "2",
           "records the worker's real exit code")
 
+print("mtime_of is portable")
+with tempfile.TemporaryDirectory() as tmp:
+    root = pathlib.Path(tmp)
+    target = root / "probe.txt"
+    target.write_text("x")
+    # Extract the helper and call it directly. The behavioural stall tests only
+    # catch a broken mtime_of on the platform they happen to run on: BSD-first
+    # ordering passed every macOS run while returning a filesystem dump on
+    # Linux, which reached `[ -gt ]` as a syntax error and disabled the whole
+    # inactivity watchdog there. This asserts the contract itself — an epoch —
+    # so either platform catches a regression.
+    src = SCRIPT.read_text()
+    start = src.index("mtime_of() {")
+    end = src.index("\n}", start) + 2
+    helper = root / "mtime_of.sh"
+    helper.write_text(src[start:end] + '\nmtime_of "$1"\n')
+    out = subprocess.run(["bash", str(helper), str(target)],
+                         capture_output=True, text=True, check=False)
+    val = out.stdout.strip()
+    check(val.isdigit() and int(val) > 0,
+          f"mtime_of returns an epoch, not a filesystem dump (got {val[:60]!r})")
+    check(out.stderr == "", f"mtime_of is silent on stderr (got {out.stderr[:60]!r})")
+    check(abs(int(val) - int(target.stat().st_mtime)) <= 1,
+          "mtime_of matches the file's real mtime")
+
 print("timeout backstop")
 with tempfile.TemporaryDirectory() as tmp:
     root = pathlib.Path(tmp)

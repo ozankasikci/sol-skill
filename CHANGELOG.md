@@ -4,6 +4,27 @@ All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.2] — 2026-08-17
+
+### Fixed
+
+- **The inactivity watchdog never worked on Linux.** `mtime_of` tried BSD
+  `stat -f %m` first and fell back to GNU `stat -c %Y`, but GNU's `-f` means
+  `--file-system`: it prints a filesystem dump and **exits 0**, so the fallback
+  never fired. The dump then reached `[ "$last" -gt 0 ]` as a syntax error, and
+  every stall check — first-event, idle, and the new command budget — was dead
+  on every Linux host from 1.4.0 onward. macOS was unaffected, which is why the
+  local suite passed while CI failed. `mtime_of` now tries GNU first and
+  validates the result is numeric before returning it.
+
+  This mattered most on 1.4.1, which turned the absolute cap off and left Linux
+  workers with no watchdog at all. Linux users on 1.4.0 or 1.4.1 should upgrade.
+
+- A unit test now asserts `mtime_of` returns an epoch. The behavioural stall
+  tests only exercise the platform they run on, so a BSD-first ordering passed
+  every macOS run while being broken everywhere else; this asserts the contract
+  itself, so either platform catches a regression.
+
 ## [1.4.1] — 2026-08-17
 
 ### Changed
