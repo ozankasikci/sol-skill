@@ -11,6 +11,11 @@
 #   sol-parallel.sh --resume    <run-dir>       send correction briefs
 #   sol-parallel.sh --cleanup   <run-dir>       remove merged worktrees/branches
 #
+# A brief may name reference images in a sidecar next to it:
+#   <run-dir>/tasks/01-<slug>.images   one path per line, '#' comments ignored
+# Each is passed to that worker as `codex exec -i`. Missing paths fail the run
+# at preflight, before any worktree is created.
+#
 # Exit: 0 all ok · 1 a worker failed · 2 precondition/usage · 75 still running
 #
 # Env: SOL_MAX_WORKERS (default 3)   ceiling on --workers
@@ -166,6 +171,27 @@ preflight_launch() {
   [ -z "$(git status --porcelain)" ] \
     || die "working tree is dirty; commit or stash so each worker branches from a clean HEAD"
 
+  # Each brief may carry a sidecar naming reference images: `NN-<slug>.images`,
+  # one path per line, `#` comments and blanks ignored. Resolved and validated
+  # here so a typo fails the run before any worktree exists, rather than after
+  # a worker has already burned minutes on a brief referring to a missing file.
+  IMAGES_OF=()
+  local sidecar resolved line abs
+  for f in "${briefs[@]}"; do
+    sidecar="${f%.md}.images"
+    resolved=""
+    if [ -f "$sidecar" ]; then
+      while IFS= read -r line || [ -n "$line" ]; do
+        case "$line" in ''|'#'*) continue ;; esac
+        abs="$line"
+        case "$abs" in /*) ;; *) abs="$REPO_ROOT/$abs" ;; esac
+        [ -f "$abs" ] || die "$(basename "$sidecar"): image not found: $line"
+        resolved+="$abs"$'\n'
+      done < "$sidecar"
+    fi
+    IMAGES_OF+=("$resolved")
+  done
+
   BRIEFS=("${briefs[@]}")
 }
 
@@ -234,6 +260,7 @@ create_worktrees() {
     # Record the brief now. Recovering it later by globbing `*-<slug>.md` is
     # ambiguous: brief `01-add-auth.md` also matches slug `auth`.
     printf '%s\n' "${BRIEF_OF[i]}" > "$OUT_DIR/$slug/brief"
+    printf '%s' "${IMAGES_OF[i]:-}" > "$OUT_DIR/$slug/images"
     git worktree add -q -b "sol/$slug" "$wt" HEAD \
       || die "could not create worktree for $slug"
     if ! bootstrap_worktree "$wt" "$slug"; then
@@ -259,8 +286,13 @@ launch_workers() {
     [ -f "$w/status" ] && continue        # failed-setup: never launched
     date +%s > "$w/started-at"
     nohup bash -c '
+      img=()
+      if [ -s "$4/images" ]; then
+        while IFS= read -r p; do [ -n "$p" ] && img+=(-i "$p"); done < "$4/images"
+      fi
       codex exec --json -m "$1" -c model_reasoning_effort="$2" \
         -s workspace-write --color never -C "$3" \
+        ${img[@]+"${img[@]}"} \
         -o "$4/report.md" - < "$5" \
         > "$4/events.jsonl" 2> "$4/stderr.txt"
       printf "%s\n" "$?" > "$4/exit-code"

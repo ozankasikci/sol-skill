@@ -496,6 +496,68 @@ with tempfile.TemporaryDirectory() as tmp:
     check(abs(int(val) - int(target.stat().st_mtime)) <= 1,
           "mtime_of matches the file's real mtime")
 
+print("image sidecar")
+with tempfile.TemporaryDirectory() as tmp:
+    root = pathlib.Path(tmp)
+    bin_dir = root / "bin"
+    install_fake_codex(bin_dir)
+    repo = make_repo(root / "repo")
+    run_dir = root / "run"
+    write_tasks(run_dir, "visual", "plain")
+    shot = root / "mockup.png"
+    shot.write_bytes(b"\x89PNG\r\n\x1a\n")
+    rel = repo / "ref.png"
+    rel.write_bytes(b"\x89PNG\r\n\x1a\n")
+    # Committed, not just written: an uncommitted file would trip the clean-tree
+    # precondition, which is correct behaviour and not what this test is about.
+    git(repo, "add", "-A"); git(repo, "commit", "-qm", "add reference image")
+    # Absolute path, a repo-relative path, a comment and a blank line.
+    (run_dir / "tasks" / "01-visual.images").write_text(
+        f"# reference images\n{shot}\n\nref.png\n")
+    arglog = root / "args.log"
+    env = dict(os.environ)
+    env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
+    for k in ("SOL_MAX_WORKERS", "SOL_WORKTREE_SETUP", "SOL_WORKER_TIMEOUT"):
+        env.pop(k, None)
+    env["FAKE_ARGLOG"] = str(arglog)
+    r = subprocess.run(["bash", str(SCRIPT), "--workers", "2", str(run_dir)],
+                       cwd=repo, capture_output=True, text=True, check=False, env=env,
+                       timeout=120)
+    check(r.returncode == 0, f"a run with an image sidecar exits 0 (stderr: {r.stderr[:200]})")
+    args = arglog.read_text()
+    visual = [l for l in args.splitlines() if "visual" in l]
+    plain = [l for l in args.splitlines() if "plain" in l]
+    check(len(visual) == 1 and f"-i {shot}" in visual[0],
+          "the absolute sidecar path is passed to that worker as -i")
+    # Compare on the resolved suffix, not the literal fixture path: the script
+    # resolves relative entries against `git rev-parse --show-toplevel`, which on
+    # macOS returns /private/var/... where the fixture says /var/... . Asserting
+    # the raw path passes on Linux and fails here for a reason unrelated to the
+    # behaviour under test.
+    check(len(visual) == 1 and visual[0].count(" -i ") == 2
+          and "/ref.png" in visual[0],
+          "a repo-relative sidecar path is resolved and passed as -i")
+    check("#" not in " ".join(visual), "comment lines are not passed as images")
+    check(len(plain) == 1 and " -i " not in f" {plain[0]} ",
+          "a worker with no sidecar gets no -i at all")
+
+print("image sidecar: a missing image fails before anything is created")
+with tempfile.TemporaryDirectory() as tmp:
+    root = pathlib.Path(tmp)
+    bin_dir = root / "bin"
+    install_fake_codex(bin_dir)
+    repo = make_repo(root / "repo")
+    run_dir = root / "run"
+    write_tasks(run_dir, "visual")
+    (run_dir / "tasks" / "01-visual.images").write_text("does-not-exist.png\n")
+    r = run(repo, bin_dir, "--workers", "1", str(run_dir))
+    check(r.returncode == 2, f"exit 2 when a sidecar names a missing image (got {r.returncode})")
+    check("does-not-exist.png" in r.stderr, "names the missing image")
+    check(not (root / ".sol-worktrees").exists(),
+          "fails before any worktree is created")
+    check(git(repo, "branch", "--list", "sol/visual") == "",
+          "fails before any branch is created")
+
 print("timeout backstop")
 with tempfile.TemporaryDirectory() as tmp:
     root = pathlib.Path(tmp)
