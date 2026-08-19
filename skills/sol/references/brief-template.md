@@ -52,6 +52,39 @@ End your final message with:
 </output_contract>
 ```
 
+## Visual tasks
+
+Two capabilities the plain template does not reach for.
+
+**Attaching images.** Pass `-i <file>` (repeatable) on the `codex exec` line to put
+images in front of Sol — a screenshot of the broken state, the mockup to match, the
+chart that renders wrong. Verified: Sol reads them and describes their actual content.
+Reference the attachment in `<task>` so it knows what the image is for:
+
+```xml
+<task>
+The attached screenshot shows the settings panel overflowing its container at 320px.
+Fix the layout so it matches the second attached image, which is the intended design.
+</task>
+```
+
+**Asking for an asset.** Codex has a built-in `image_gen` tool, so a brief can ask for
+a raster asset directly and get AI-generated pixels. Sol routes to code on its own when
+the visual is code-native (a geometric shape, an icon belonging to an existing SVG
+system), so state the intent, not the method. The criteria have to change shape,
+because there is no test command for a picture:
+
+```xml
+<acceptance_criteria>
+- `assets/title-bg.png` exists and `file` reports a PNG of at least 1024x768.
+- It depicts a lighthouse on a cliff at dusk, in the painterly style of the
+  attached reference — checked by looking at it, not by a command.
+</acceptance_criteria>
+```
+
+Review such a run by opening the image, not by reading `git diff`: a binary shows only
+`Binary files differ`, which certifies nothing.
+
 ## Parallel brief additions
 
 In parallel mode each worker runs in its own isolated git worktree, so no two workers

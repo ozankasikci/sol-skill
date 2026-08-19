@@ -1,6 +1,6 @@
 ---
 name: sol
-version: "1.4.2"
+version: "1.5.0"
 description: Delegate implementation (or, when explicitly requested, research) to GPT-5.6 Sol (xhigh reasoning) via Codex CLI. Claude plans, orchestrates, and reviews; Sol writes the code.
 argument-hint: "[implementation task]"
 disable-model-invocation: true
@@ -60,6 +60,8 @@ codex exec --json -m gpt-5.6-sol -c model_reasoning_effort=xhigh \
 
 (`--json` writes a JSONL event log; keep stderr in its own file — `2>&1` would corrupt the log.)
 
+Add `-i <file>` (repeatable) to attach images to the brief when the task is about something visual: a screenshot of the broken UI, a design mockup to match, a failing chart. Sol reads them, and one screenshot beats a paragraph describing it.
+
 If the user asks what happened or the run failed, summarize the event log with `python3 <skill-dir>/scripts/sol-watch.py "$SCRATCHPAD/sol-events.jsonl" --once` instead of reading the raw JSONL.
 
 Structure the brief as compact XML blocks (GPT-5.x responds better to explicit contracts than to prose; tighten the contract before ever raising effort). See `references/brief-template.md` for a fill-in template.
@@ -71,10 +73,12 @@ Structure the brief as compact XML blocks (GPT-5.x responds better to explicit c
 - `<action_safety>` — no unrelated changes, no drive-by refactors.
 - `<output_contract>` — final message ends with: changed files, exact commands run, and their results.
 
+Sol is not limited to writing code. Codex ships a built-in `image_gen` tool, so a brief may legitimately ask for a raster asset (a title screen, a texture, a mockup) and Sol will produce real AI-generated pixels rather than code that draws them — it routes to code on its own when the visual is code-native, such as a geometric shape or an icon that belongs in an existing SVG system. When a brief asks for an asset, `<acceptance_criteria>` cannot be a test command: make it checkable another way — the file exists at the stated path, `file` reports the expected format, dimensions match.
+
 Execution notes:
 - Match effort to the task: `high` for mechanical work (file moves, scaffolding, renames, config plumbing), `xhigh` only for algorithmically hard briefs. Stalls are effort-correlated (openai/codex#24260, #23807) and xhigh buys nothing on mechanical work.
 - xhigh runs are slow, commonly 5–15 minutes. Use a 10-minute Bash timeout; for large tasks run in the background and wait for completion.
-- **Silence is not progress.** Codex can hang after `turn.started` and never speak again — a known failure shape at high effort. If `sol-events.jsonl` has gained no new events in ~10 minutes (check its mtime, don't read it), first check the log's tail for an `item.started` command with no matching `item.completed` — that silence is a running build and is fine (the 30-minute absolute cap is its backstop). Only with nothing in flight: kill the process and relaunch the same brief in a fresh session one effort step lower. Parallel mode does all of this automatically; single-worker mode is your job.
+- **Silence is not progress.** Codex can hang after `turn.started` and never speak again — a known failure shape at high effort. If `sol-events.jsonl` has gained no new events in ~10 minutes (check its mtime, don't read it), first check the log's tail for an `item.started` command with no matching `item.completed` — that silence is a running build and is fine (`SOL_COMMAND_TIMEOUT`, 30 minutes, is its backstop — the absolute per-worker cap is off by default). Only with nothing in flight: kill the process and relaunch the same brief in a fresh session one effort step lower. Parallel mode does all of this automatically; single-worker mode is your job.
 - Read only `sol-report.md` for Sol's final report — never trust it as verification. Do not read `sol-events.jsonl` or `sol-stderr.txt` unless the run failed — and then use the watcher's `--once` summary rather than the raw stream.
 
 ## 3. Review the diff, not the summary
@@ -86,6 +90,8 @@ After Sol finishes, review token-efficiently without lowering the bar:
 3. Re-run the project's test/lint/typecheck commands yourself, capturing output to a scratch file; read the summary and failure lines, not the full passing output.
 
 Review as a senior engineer would — correctness against the acceptance criteria, regressions, edge cases, security, missing tests, and out-of-scope changes.
+
+**A binary artifact has no reviewable diff.** `git diff` reports `Binary files differ` and tells you nothing, so an image or other asset needs a different check: confirm it exists where the brief said, verify format and dimensions (`file`, `identify`), and look at it — read the image yourself rather than trusting the report that it depicts what was asked for. Judge its content against the brief the way you would judge code against the criteria; the point of this phase is that the model which produced the artifact does not get to certify it.
 
 ## 4. Corrections (max 2 rounds)
 

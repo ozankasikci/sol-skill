@@ -4,6 +4,36 @@ All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.0] — 2026-08-19
+
+### Added
+
+- Image input. The brief command can now take `-i <file>` (repeatable) to attach
+  screenshots, mockups, or a failing chart, and the brief template shows how to
+  reference the attachment from `<task>`. Verified against a real run: Sol reads
+  the image and describes its actual content.
+- Guidance for asset-producing briefs. Codex ships a built-in `image_gen` tool —
+  a model-side tool, invisible in `codex exec --help`, which is why this went
+  unnoticed — so a brief may ask for a raster asset and get AI-generated pixels.
+  Sol routes to code on its own when the visual is code-native: asked for a solid
+  red circle it rendered with ImageMagick and said so; asked for a painterly
+  title screen it used `image_gen`. Acceptance criteria for an asset cannot be a
+  test command, so the template shows the checkable form instead.
+
+### Changed
+
+- Phase 3 now covers binary artifacts. `git diff` reports only `Binary files
+  differ`, so an image is reviewed by opening it and judging its content against
+  the brief — the review phase exists precisely so the model that produced the
+  artifact does not certify it, and that argument does not stop applying at the
+  file-format boundary.
+
+### Fixed
+
+- Phase 2 said a silent in-flight command was backstopped by "the 30-minute
+  absolute cap", which 1.4.1 turned off by default. `SOL_COMMAND_TIMEOUT` is the
+  backstop now, and the text says so.
+
 ## [1.4.2] — 2026-08-17
 
 ### Fixed
