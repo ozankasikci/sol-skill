@@ -11,6 +11,11 @@
 #   sol-parallel.sh --resume    <run-dir>       send correction briefs
 #   sol-parallel.sh --cleanup   <run-dir>       remove merged worktrees/branches
 #
+# --in-place runs a single brief in the repo itself: no worktree, no branch, no
+# commit, changes left in the working tree exactly as a plain single-worker run
+# leaves them -- but with the inactivity watchdog and stall retries that a bare
+# `codex exec` has no way to get.
+#
 # A brief may name reference images in a sidecar next to it:
 #   <run-dir>/tasks/01-<slug>.images   one path per line, '#' comments ignored
 # Each is passed to that worker as `codex exec -i`. Missing paths fail the run
@@ -121,11 +126,13 @@ MODE="launch"
 WORKERS=""
 RUN_DIR=""
 DRY_RUN=0
+IN_PLACE=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --workers) [ $# -ge 2 ] || die "--workers requires a value"
                WORKERS="$2"; shift 2 ;;
     --dry-run) DRY_RUN=1; shift ;;
+    --in-place) IN_PLACE=1; shift ;;
     --wait)    MODE="wait";    shift ;;
     --resume)  MODE="resume";  shift ;;
     --cleanup) MODE="cleanup"; shift ;;
@@ -165,6 +172,14 @@ preflight_launch() {
   fi
   if [ "${#briefs[@]}" -gt "$WORKERS" ]; then
     die "${#briefs[@]} briefs exceed $WORKERS workers; run one wave per batch, merging between waves"
+  fi
+
+  if [ "$IN_PLACE" -eq 1 ]; then
+    # No worktree means no isolation: two workers editing one tree corrupt each
+    # other. In-place exists to give one ordinary run the watchdog, not to
+    # parallelise.
+    [ "$WORKERS" -eq 1 ] || die "--in-place runs in the repo itself and takes exactly one worker"
+    [ "${#briefs[@]}" -eq 1 ] || die "--in-place takes exactly one brief, found ${#briefs[@]}"
   fi
 
   command -v codex >/dev/null 2>&1 || die "codex not found on PATH"
@@ -226,7 +241,8 @@ create_worktrees() {
   local branch sha brief slug wt
   branch="$(git rev-parse --abbrev-ref HEAD)"
   sha="$(git rev-parse HEAD)"
-  mkdir -p "$OUT_DIR" "$WORKTREE_ROOT"
+  mkdir -p "$OUT_DIR"
+  [ "$IN_PLACE" -eq 1 ] || mkdir -p "$WORKTREE_ROOT"
   printf '%s\t%s\n' "$branch" "$sha" > "$RUN_DIR/base"
 
   SLUGS=(); WORKTREES=(); BRIEF_OF=()
@@ -240,10 +256,16 @@ create_worktrees() {
       candidate="$stem-$n"; n=$((n + 1))
     done
     slug="$candidate"
-    git show-ref --verify --quiet "refs/heads/sol/$slug" \
-      && die "branch sol/$slug already exists; delete it or rename the brief"
+    if [ "$IN_PLACE" -eq 0 ] \
+       && git show-ref --verify --quiet "refs/heads/sol/$slug"; then
+      die "branch sol/$slug already exists; delete it or rename the brief"
+    fi
     SLUGS+=("$slug"); BRIEF_OF+=("$brief")
-    WORKTREES+=("$WORKTREE_ROOT/$slug")
+    if [ "$IN_PLACE" -eq 1 ]; then
+      WORKTREES+=("$REPO_ROOT")
+    else
+      WORKTREES+=("$WORKTREE_ROOT/$slug")
+    fi
   done
 
   # The authoritative roster of the run, in task order, written before anything
@@ -261,6 +283,12 @@ create_worktrees() {
     # ambiguous: brief `01-add-auth.md` also matches slug `auth`.
     printf '%s\n' "${BRIEF_OF[i]}" > "$OUT_DIR/$slug/brief"
     printf '%s' "${IMAGES_OF[i]:-}" > "$OUT_DIR/$slug/images"
+    if [ "$IN_PLACE" -eq 1 ]; then
+      # The repo is the workspace. Nothing to create, nothing to bootstrap:
+      # gitignored files and dependencies are already here, which is the whole
+      # reason this mode is cheaper than a worktree for a single run.
+      continue
+    fi
     git worktree add -q -b "sol/$slug" "$wt" HEAD \
       || die "could not create worktree for $slug"
     if ! bootstrap_worktree "$wt" "$slug"; then
@@ -484,7 +512,8 @@ post_process() {
       elif [ "$code" != "0" ]; then
         status="failed-run"
       elif [ -z "$(git -C "$wt" status --porcelain)" ] \
-        && [ "$(git -C "$wt" rev-parse HEAD)" = "$(cut -f2 "$RUN_DIR/base")" ]; then
+        && { [ "$IN_PLACE" -eq 1 ] \
+             || [ "$(git -C "$wt" rev-parse HEAD)" = "$(cut -f2 "$RUN_DIR/base")" ]; }; then
         status="no-changes"
       elif [ -z "$(git -C "$wt" status --porcelain)" ]; then
         # Clean tree but the branch has already moved past base: a resumed
@@ -498,7 +527,13 @@ post_process() {
       fi
     fi
 
-    if [ "$status" = "ok" ] && [ -z "$commit" ]; then
+    if [ "$IN_PLACE" -eq 1 ] && [ "$status" = "ok" ]; then
+      # Deliberately no commit. In-place mirrors the single-worker flow: the
+      # changes stay in the working tree for review, and the reviewer decides
+      # what to do with them. Committing here would silently change what a
+      # plain /sol leaves behind.
+      files="$(git -C "$wt" status --porcelain | sed 's/^...//')"
+    elif [ "$status" = "ok" ] && [ -z "$commit" ]; then
       git -C "$wt" add -A >/dev/null 2>&1
       if git -C "$wt" commit -q -m "sol: $slug" >/dev/null 2>&1; then
         commit="$(git -C "$wt" rev-parse HEAD)"
@@ -520,7 +555,7 @@ post_process() {
     # gives NUL-delimited, unquoted names regardless of content; translating
     # NUL to newline matches how files-changed is already stored and parsed.
     # This is the branch's whole diff, which is what a reviewer of it wants.
-    if [ "$status" = "ok" ]; then
+    if [ "$status" = "ok" ] && [ "$IN_PLACE" -eq 0 ]; then
       files="$(git -C "$wt" diff --name-only -z \
         "$(cut -f2 "$RUN_DIR/base")" HEAD | tr '\0' '\n')"
     else

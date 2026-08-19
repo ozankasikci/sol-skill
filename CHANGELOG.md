@@ -4,6 +4,38 @@ All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.0] — 2026-08-19
+
+### Added
+
+- Reference images for workers. A brief may carry a sidecar,
+  `<run-dir>/tasks/NN-<slug>.images`, one path per line with `#` comments; each
+  entry resolves against the repo root and is passed to that worker as
+  `codex exec -i`. A path that does not resolve fails the run at preflight,
+  before any worktree exists. Verified end to end against real codex.
+- `--in-place`: run a single brief in the repo itself — no worktree, no branch,
+  no commit, changes left in the working tree exactly as a bare `codex exec`
+  leaves them — but supervised by the inactivity watchdog, with stall retries,
+  a `summary.json` status and a real exit code.
+
+### Changed
+
+- **Phase 2 now launches through the script in single-worker mode too.** The
+  skill used to end its stall guidance with "parallel mode does all of this
+  automatically; single-worker mode is your job", which is the one thing this
+  project has repeatedly established does not work: a flow depending on the
+  model reliably doing something degrades to silence when it doesn't, and that
+  is what the 1.2.0 revert was about.
+
+  It cost hours in practice. A visual brief could not use the launcher, because
+  workers could not take reference images, so the run went out on the
+  unsupervised path and hung at `xhigh` with `thread.started`, `turn.started`
+  and 101 bytes — silent for nearly three hours. `SOL_FIRST_EVENT_TIMEOUT` would
+  have killed and retried it in fifteen minutes; it was simply unreachable from
+  where the work had to run. The images sidecar removed that reason, and
+  `--in-place` removes the remaining one, so the unsupervised path is now an
+  explicitly-documented fallback rather than the default.
+
 ## [1.5.0] — 2026-08-19
 
 ### Added

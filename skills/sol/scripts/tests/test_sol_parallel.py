@@ -558,6 +558,46 @@ with tempfile.TemporaryDirectory() as tmp:
     check(git(repo, "branch", "--list", "sol/visual") == "",
           "fails before any branch is created")
 
+print("--in-place")
+with tempfile.TemporaryDirectory() as tmp:
+    root = pathlib.Path(tmp)
+    bin_dir = root / "bin"
+    install_fake_codex(bin_dir)
+    repo = make_repo(root / "repo")
+    run_dir = root / "run"
+    write_tasks(run_dir, "inplace")
+    head_before = git(repo, "rev-parse", "HEAD")
+    r = run(repo, bin_dir, "--workers", "1", "--in-place", str(run_dir))
+    check(r.returncode == 0, f"--in-place exits 0 (stderr: {r.stderr[:200]})")
+    check(not (root / ".sol-worktrees").exists(), "--in-place creates no worktree")
+    check(git(repo, "branch", "--list", "sol/inplace") == "", "--in-place creates no branch")
+    check(git(repo, "rev-parse", "HEAD") == head_before, "--in-place makes no commit")
+    # The work lands in the user's tree, exactly as a plain single-worker run.
+    check((repo / "inplace.txt").is_file(), "the worker's changes land in the repo itself")
+    check("inplace.txt" in git(repo, "status", "--porcelain"),
+          "changes are left uncommitted for review")
+    s = json.loads((run_dir / "summary.json").read_text())
+    check(s["workers"][0]["status"] == "ok", "--in-place classifies ok")
+    check(s["workers"][0]["files_changed"] == ["inplace.txt"],
+          f"files_changed comes from the working tree (got {s['workers'][0]['files_changed']})")
+    check(s["workers"][0]["commit"] == "", "no commit sha is recorded in-place")
+
+print("--in-place refuses what it cannot isolate")
+with tempfile.TemporaryDirectory() as tmp:
+    root = pathlib.Path(tmp)
+    bin_dir = root / "bin"
+    install_fake_codex(bin_dir)
+    repo = make_repo(root / "repo")
+    run_dir = root / "run"
+    write_tasks(run_dir, "a", "b")
+    r = run(repo, bin_dir, "--workers", "2", "--in-place", str(run_dir))
+    check(r.returncode == 2, "--in-place with 2 workers exits 2")
+    check("one worker" in r.stderr, "explains that in-place is single-worker only")
+    run_dir2 = root / "run2"
+    write_tasks(run_dir2, "a", "b")
+    r = run(repo, bin_dir, "--workers", "1", "--in-place", str(run_dir2))
+    check(r.returncode == 2, "--in-place with 2 briefs exits 2")
+
 print("timeout backstop")
 with tempfile.TemporaryDirectory() as tmp:
     root = pathlib.Path(tmp)

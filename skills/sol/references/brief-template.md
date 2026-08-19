@@ -56,8 +56,11 @@ End your final message with:
 
 Two capabilities the plain template does not reach for.
 
-**Attaching images.** Pass `-i <file>` (repeatable) on the `codex exec` line to put
-images in front of Sol — a screenshot of the broken state, the mockup to match, the
+**Attaching images.** List them in a sidecar beside the brief —
+`<run-dir>/tasks/NN-<slug>.images`, one path per line, `#` comments ignored, paths
+absolute or relative to the repo root. The launcher passes each as `codex exec -i`,
+and a missing path fails the run at preflight. (On a direct `codex exec` call, pass
+`-i <file>` yourself, repeatable.) This puts images in front of Sol — a screenshot of the broken state, the mockup to match, the
 chart that renders wrong. Verified: Sol reads them and describes their actual content.
 Reference the attachment in `<task>` so it knows what the image is for:
 

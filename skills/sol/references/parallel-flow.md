@@ -48,6 +48,11 @@ leading `NN-`, lowercases, and collapses every character that isn't `a-z0-9` to 
 Whatever slug you announced in the split, use the same text in the filename, or the
 resulting branch name (`sol/<slug>`) won't match what you told the user.
 
+Reference images for a worker go in a sidecar beside its brief:
+`<run-dir>/tasks/NN-<slug>.images`, one path per line, `#` comments ignored, absolute
+or repo-root-relative. Each is passed to that worker as `codex exec -i`; a path that
+does not resolve fails the whole run at preflight, before any worktree exists.
+
 ## 5. Launch
 
 Checkpoint first: `sol-parallel.sh` refuses to launch against a dirty working tree

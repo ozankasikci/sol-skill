@@ -1,6 +1,6 @@
 ---
 name: sol
-version: "1.5.0"
+version: "1.6.0"
 description: Delegate implementation (or, when explicitly requested, research) to GPT-5.6 Sol (xhigh reasoning) via Codex CLI. Claude plans, orchestrates, and reviews; Sol writes the code.
 argument-hint: "[implementation task]"
 disable-model-invocation: true
@@ -48,19 +48,31 @@ Inspect only the files needed to write a competent brief. Produce a short plan: 
 
 First checkpoint the repo: if the working tree is dirty, commit or stash so `git diff` afterward isolates exactly Sol's changes and a bad run is trivially revertible.
 
-Write the brief to a scratchpad file (avoids shell-quoting issues), then run:
+Write the brief to `<run-dir>/tasks/01-<slug>.md`, then launch through the script:
 
 ```bash
-codex exec --json -m gpt-5.6-sol -c model_reasoning_effort=xhigh \
+bash <skill-dir>/scripts/sol-parallel.sh --workers 1 --in-place "$SCRATCHPAD/sol-run"
+```
+
+`--in-place` runs in your working tree and leaves the changes there uncommitted, exactly as a bare `codex exec` would — but it also supervises the run. **Use it for every single-worker run.** A hung codex sits alive and silent forever, and the launcher is what notices: it kills the worker after `SOL_FIRST_EVENT_TIMEOUT` with nothing in its log, relaunches once at lower effort, records a real status in `summary.json`, and returns an exit code you can act on. Watching for that by hand is the one job that has actually been lost in practice — a run hung at `xhigh` with two lines in its event log and burned hours before anyone looked.
+
+Read `<run-dir>/summary.json` for the outcome, and `<run-dir>/workers/<slug>/report.md` for Sol's final message. If the tool call times out before the script returns, the worker is still running — re-attach with `--wait "$SCRATCHPAD/sol-run"` until it stops returning 75.
+
+For a visual task, list reference images in a sidecar next to the brief — `<run-dir>/tasks/01-<slug>.images`, one path per line — and each is passed to the worker as `codex exec -i`. A screenshot of the broken UI or the mockup to match beats a paragraph describing it, and a missing path fails the run at preflight rather than mid-run.
+
+<details>
+<summary>Direct <code>codex exec</code> invocation, if you need it</summary>
+
+```bash
+codex exec --json -m gpt-5.6-sol -c model_reasoning_effort=high \
   -s workspace-write --color never \
   -o "$SCRATCHPAD/sol-report.md" \
   - < "$SCRATCHPAD/sol-brief.md" \
   > "$SCRATCHPAD/sol-events.jsonl" 2> "$SCRATCHPAD/sol-stderr.txt"
 ```
 
-(`--json` writes a JSONL event log; keep stderr in its own file — `2>&1` would corrupt the log.)
-
-Add `-i <file>` (repeatable) to attach images to the brief when the task is about something visual: a screenshot of the broken UI, a design mockup to match, a failing chart. Sol reads them, and one screenshot beats a paragraph describing it.
+(`--json` writes a JSONL event log; keep stderr in its own file — `2>&1` would corrupt the log.) This form has **no watchdog**: if you use it, stall-watching is yours to do, per the note below.
+</details>
 
 If the user asks what happened or the run failed, summarize the event log with `python3 <skill-dir>/scripts/sol-watch.py "$SCRATCHPAD/sol-events.jsonl" --once` instead of reading the raw JSONL.
 
@@ -78,7 +90,7 @@ Sol is not limited to writing code. Codex ships a built-in `image_gen` tool, so 
 Execution notes:
 - Match effort to the task: `high` for mechanical work (file moves, scaffolding, renames, config plumbing), `xhigh` only for algorithmically hard briefs. Stalls are effort-correlated (openai/codex#24260, #23807) and xhigh buys nothing on mechanical work.
 - xhigh runs are slow, commonly 5–15 minutes. Use a 10-minute Bash timeout; for large tasks run in the background and wait for completion.
-- **Silence is not progress.** Codex can hang after `turn.started` and never speak again — a known failure shape at high effort. If `sol-events.jsonl` has gained no new events in ~10 minutes (check its mtime, don't read it), first check the log's tail for an `item.started` command with no matching `item.completed` — that silence is a running build and is fine (`SOL_COMMAND_TIMEOUT`, 30 minutes, is its backstop — the absolute per-worker cap is off by default). Only with nothing in flight: kill the process and relaunch the same brief in a fresh session one effort step lower. Parallel mode does all of this automatically; single-worker mode is your job.
+- **Silence is not progress.** Codex can hang after `turn.started` and never speak again — a known failure shape at high effort. If `sol-events.jsonl` has gained no new events in ~10 minutes (check its mtime, don't read it), first check the log's tail for an `item.started` command with no matching `item.completed` — that silence is a running build and is fine (`SOL_COMMAND_TIMEOUT`, 30 minutes, is its backstop — the absolute per-worker cap is off by default). Only with nothing in flight: kill the process and relaunch the same brief in a fresh session one effort step lower. The launcher does all of this automatically in every mode, `--in-place` included — which is why phase 2 routes through it. Only a direct `codex exec` leaves it to you, and a stall watched by hand is a stall that gets missed.
 - Read only `sol-report.md` for Sol's final report — never trust it as verification. Do not read `sol-events.jsonl` or `sol-stderr.txt` unless the run failed — and then use the watcher's `--once` summary rather than the raw stream.
 
 ## 3. Review the diff, not the summary
