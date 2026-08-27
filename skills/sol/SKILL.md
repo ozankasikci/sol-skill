@@ -1,6 +1,6 @@
 ---
 name: sol
-version: "1.6.0"
+version: "1.7.0"
 description: Delegate implementation (or, when explicitly requested, research) to GPT-5.6 Sol (xhigh reasoning) via Codex CLI. Claude plans, orchestrates, and reviews; Sol writes the code.
 argument-hint: "[implementation task]"
 disable-model-invocation: true
@@ -37,6 +37,7 @@ flow below.
 | `SOL_COMMAND_TIMEOUT` | `1800` | Parallel mode: seconds an in-flight command may produce nothing before the worker is stall-killed — bounds the exemption that lets long silent builds run |
 | `SOL_WORKER_TIMEOUT` | off | Parallel mode: optional absolute per-worker cap in seconds. Off by default — a task's duration is not predictable, so any constant kills productive workers; the budgets above bound silence instead |
 | `SOL_STALL_RETRIES` | `1` | Parallel mode: automatic relaunches of a stalled worker, each a fresh session one effort step lower (`xhigh → high → medium → low`) |
+| `SOL_CODEX_CONFIG` | unset | Extra `-c key=value` overrides, space separated, applied to every codex invocation the launcher makes. See **Sandboxed toolchains** below. Values must not contain spaces |
 
 **Task tracking:** If harness task tools are available, call TaskCreate at the start (short title from the request, status in_progress), TaskUpdate once per phase transition (planning → Sol implementing → reviewing → corrections), and TaskUpdate to completed in the final report — or leave it in_progress with a note if blocked. Keep updates to one line; skip entirely if the tools are unavailable.
 
@@ -92,6 +93,18 @@ Execution notes:
 - xhigh runs are slow, commonly 5–15 minutes. Use a 10-minute Bash timeout; for large tasks run in the background and wait for completion.
 - **Silence is not progress.** Codex can hang after `turn.started` and never speak again — a known failure shape at high effort. If `sol-events.jsonl` has gained no new events in ~10 minutes (check its mtime, don't read it), first check the log's tail for an `item.started` command with no matching `item.completed` — that silence is a running build and is fine (`SOL_COMMAND_TIMEOUT`, 30 minutes, is its backstop — the absolute per-worker cap is off by default). Only with nothing in flight: kill the process and relaunch the same brief in a fresh session one effort step lower. The launcher does all of this automatically in every mode, `--in-place` included — which is why phase 2 routes through it. Only a direct `codex exec` leaves it to you, and a stall watched by hand is a stall that gets missed.
 - Read only `sol-report.md` for Sol's final report — never trust it as verification. Do not read `sol-events.jsonl` or `sol-stderr.txt` unless the run failed — and then use the watcher's `--once` summary rather than the raw stream.
+
+**Sandboxed toolchains.** `workspace-write` denies network, and denies writes outside the workspace root. Some toolchains cannot run at all under that: anything that resolves dependencies at build time (NuGet, a cold Gradle or Maven cache) fails, and `git` fails inside a **worktree**, because a worktree's git dir lives at `<main-repo>/.git/worktrees/<name>/` — outside the write root — so `index.lock` can never be created and every commit fails deterministically.
+
+This is worth catching early, because the damage is indirect. A worker that cannot compile still tries to verify, and the only instrument it has left is text search — so it reports green on grep evidence and misses what a compiler would have caught in seconds (a target-typed `new(...)` invisible to a search for `new TypeName`, a literal rewritten to satisfy a grep criterion). The role split quietly degrades from "Sol implements and verifies, Claude reviews" to "Sol implements blind."
+
+Diagnose it by running the project's own build inside a throwaway `codex exec` and reading the error, then grant only what that error names, via `SOL_CODEX_CONFIG`:
+
+```bash
+export SOL_CODEX_CONFIG='sandbox_workspace_write.network_access=true sandbox_workspace_write.writable_roots=["/abs/path/to/main-repo/.git"]'
+```
+
+Validate any key with `codex exec --strict-config`, which errors on unrecognized fields — note that `[projects."<path>"]` sections in `~/.codex/config.toml` accept only `trust_level`, so sandbox settings cannot be scoped to a repo that way. Keep this an explicit per-repo opt-in: granting network removes the sandbox's main protection against a worker fetching or exfiltrating, and that is the caller's call, not a default. Tell Sol in the brief which checks it is expected to run and which are known-blocked — a worker that knows a check is unavailable reports that plainly instead of burning its budget inventing workarounds.
 
 ## 3. Review the diff, not the summary
 

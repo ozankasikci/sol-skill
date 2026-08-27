@@ -316,6 +316,14 @@ Behavior changes by editing it, with two exceptions that survive a skill update:
 
 **Change the correction budget.** Two rounds is a deliberate stopping rule, not a tuning knob I'd raise casually; an agent on round five of the same bug isn't converging.
 
+**Let the worker's toolchain actually run.** `workspace-write` denies network and denies writes outside the workspace root, which some builds cannot survive — anything resolving dependencies at build time, and `git` inside a worktree, whose git dir sits at `<main-repo>/.git/worktrees/<name>/` and so can never take `index.lock`. The failure is worse than it looks: a worker that cannot compile verifies by grep instead and reports green on grep evidence. `SOL_CODEX_CONFIG` passes extra `-c key=value` overrides to every codex invocation:
+
+```bash
+export SOL_CODEX_CONFIG='sandbox_workspace_write.network_access=true sandbox_workspace_write.writable_roots=["/abs/path/to/main-repo/.git"]'
+```
+
+Unset by default, and worth keeping that way until a build error names what it needs — granting network removes the sandbox's main protection, so it should be a deliberate per-repo decision. `codex exec --strict-config` validates key names; `[projects."<path>"]` in `~/.codex/config.toml` won't work for this, as those sections accept only `trust_level`.
+
 **Turn off the manual-only gate.** `disable-model-invocation: true` means `/sol` fires only when you type it. Remove it and Claude may route work to Sol on its own, which also means spending a second model's budget without asking.
 
 ---

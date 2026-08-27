@@ -4,6 +4,23 @@ All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.0] — 2026-08-23
+
+### Added
+
+- `SOL_CODEX_CONFIG`: extra `-c key=value` overrides, space separated, applied
+  to all three codex invocations the launcher makes (launch, stall relaunch,
+  and resume). Unset by default — relaxing the sandbox is the caller's call per
+  repo, never the script's. Verified end to end against real codex: the same
+  probe brief reports HTTP `000` without it and `200` with
+  `sandbox_workspace_write.network_access=true`.
+- SKILL.md **Sandboxed toolchains**: how to recognise a repo whose build cannot
+  run under `workspace-write` at all, and why it matters more than it looks — a
+  worker that cannot compile verifies by grep instead, reports green on grep
+  evidence, and silently turns the role split into "Sol implements blind."
+  Covers the worktree case specifically: a worktree's git dir lives outside the
+  write root, so `git commit` fails deterministically, not intermittently.
+
 ## [1.6.0] — 2026-08-19
 
 ### Added

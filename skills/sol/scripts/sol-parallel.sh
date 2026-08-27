@@ -41,6 +41,17 @@
 #                                    exemption that lets long builds run silent.
 #      SOL_STALL_RETRIES (1)         automatic relaunches of a stalled worker,
 #                                    each one reasoning-effort step lower
+#      SOL_CODEX_CONFIG              extra `-c key=value` overrides, space
+#                                    separated, applied to every codex
+#                                    invocation this script makes. The escape
+#                                    hatch for toolchains the default sandbox
+#                                    cannot run: a worker that cannot compile
+#                                    falls back to grep, and grep-shaped
+#                                    verification misses what a compiler
+#                                    catches. Values must not contain spaces.
+#                                    Deliberately unset by default — relaxing
+#                                    the sandbox is the caller's call to make,
+#                                    per repo, never this script's.
 
 set -uo pipefail
 
@@ -51,6 +62,11 @@ FIRST_EVENT_TIMEOUT="${SOL_FIRST_EVENT_TIMEOUT:-900}"
 IDLE_TIMEOUT="${SOL_IDLE_TIMEOUT:-600}"
 COMMAND_TIMEOUT="${SOL_COMMAND_TIMEOUT:-1800}"
 STALL_RETRIES="${SOL_STALL_RETRIES:-1}"
+
+# Exported rather than passed positionally: all three codex invocations below
+# run inside `nohup bash -c '...'`, and the environment is the one channel that
+# reaches every one of them without renumbering their positional arguments.
+export SOL_CODEX_CONFIG="${SOL_CODEX_CONFIG:-}"
 
 die() { printf 'sol-parallel: %s\n' "$1" >&2; exit "${2:-2}"; }
 
@@ -318,7 +334,9 @@ launch_workers() {
       if [ -s "$4/images" ]; then
         while IFS= read -r p; do [ -n "$p" ] && img+=(-i "$p"); done < "$4/images"
       fi
+      cfg=(); for kv in $SOL_CODEX_CONFIG; do cfg+=(-c "$kv"); done
       codex exec --json -m "$1" -c model_reasoning_effort="$2" \
+        ${cfg[@]+"${cfg[@]}"} \
         -s workspace-write --color never -C "$3" \
         ${img[@]+"${img[@]}"} \
         -o "$4/report.md" - < "$5" \
@@ -377,7 +395,9 @@ relaunch_stalled() {
     rm -f "$w/exit-code"
     date +%s > "$w/started-at"
     nohup bash -c '
+      cfg=(); for kv in $SOL_CODEX_CONFIG; do cfg+=(-c "$kv"); done
       codex exec --json -m "$1" -c model_reasoning_effort="$2" \
+        ${cfg[@]+"${cfg[@]}"} \
         -s workspace-write --color never -C "$3" \
         -o "$4/report.md" - < "$5" \
         > "$4/events.jsonl" 2> "$4/stderr.txt"
@@ -419,7 +439,9 @@ resume_workers() {
       # </dev/null: codex exec hangs forever on an open pipe stdin with no
       # writer (openai/codex#20919); the launch path is safe because it reads
       # the brief from stdin, but resume passes the prompt as an argument.
+      cfg=(); for kv in $SOL_CODEX_CONFIG; do cfg+=(-c "$kv"); done
       codex exec resume "$6" --json -m "$1" -c model_reasoning_effort="$2" \
+        ${cfg[@]+"${cfg[@]}"} \
         -o "$4/report.md" "$(cat "$5")" \
         > "$4/events.jsonl" 2> "$4/stderr.txt" < /dev/null
       printf "%s\n" "$?" > "$4/exit-code"
