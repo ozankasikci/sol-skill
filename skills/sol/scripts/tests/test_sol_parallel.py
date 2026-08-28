@@ -598,6 +598,49 @@ with tempfile.TemporaryDirectory() as tmp:
     r = run(repo, bin_dir, "--workers", "1", "--in-place", str(run_dir2))
     check(r.returncode == 2, "--in-place with 2 briefs exits 2")
 
+print("SOL_SANDBOX")
+with tempfile.TemporaryDirectory() as tmp:
+    root = pathlib.Path(tmp)
+    bin_dir = root / "bin"
+    install_fake_codex(bin_dir)
+    repo = make_repo(root / "repo")
+    run_dir = root / "run"
+    write_tasks(run_dir, "sbx")
+    arglog = root / "args.log"
+    base_env = dict(os.environ)
+    base_env["PATH"] = f"{bin_dir}{os.pathsep}{base_env['PATH']}"
+    for k in ("SOL_MAX_WORKERS", "SOL_WORKTREE_SETUP", "SOL_WORKER_TIMEOUT",
+              "SOL_CODEX_CONFIG", "SOL_SANDBOX"):
+        base_env.pop(k, None)
+    base_env["FAKE_ARGLOG"] = str(arglog)
+
+    r = subprocess.run(["bash", str(SCRIPT), "--workers", "1", "--in-place", str(run_dir)],
+                       cwd=repo, capture_output=True, text=True, check=False,
+                       env=base_env, timeout=120)
+    check(r.returncode == 0, f"default run exits 0 (stderr: {r.stderr[:150]})")
+    check("-s workspace-write" in arglog.read_text(),
+          "defaults to -s workspace-write")
+    check("sandbox is" not in r.stderr, "no warning on the default sandbox")
+
+    # An explicit -s beats -c sandbox_mode=, so this must replace the flag
+    # rather than be appended as config, or it is silently ignored.
+    arglog.write_text("")
+    run_dir2 = root / "run2"
+    write_tasks(run_dir2, "sbx2")
+    # A fresh repo: the in-place run above left its worker's file uncommitted,
+    # which correctly trips the clean-tree precondition on any second run here.
+    repo2 = make_repo(root / "repo2")
+    env = dict(base_env); env["SOL_SANDBOX"] = "danger-full-access"
+    r = subprocess.run(["bash", str(SCRIPT), "--workers", "1", "--in-place", str(run_dir2)],
+                       cwd=repo2, capture_output=True, text=True, check=False,
+                       env=env, timeout=120)
+    check(r.returncode == 0, f"SOL_SANDBOX run exits 0 (stderr: {r.stderr[:150]})")
+    args = arglog.read_text()
+    check("-s danger-full-access" in args, "SOL_SANDBOX replaces the -s flag")
+    check("-s workspace-write" not in args, "the hardcoded default is gone, not duplicated")
+    check("danger-full-access" in r.stderr and "write outside" in r.stderr,
+          "warns on stderr when confinement is dropped")
+
 print("timeout backstop")
 with tempfile.TemporaryDirectory() as tmp:
     root = pathlib.Path(tmp)

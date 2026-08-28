@@ -41,6 +41,16 @@
 #                                    exemption that lets long builds run silent.
 #      SOL_STALL_RETRIES (1)         automatic relaunches of a stalled worker,
 #                                    each one reasoning-effort step lower
+#      SOL_SANDBOX (workspace-write) sandbox policy passed as `-s`. Set to
+#                                    danger-full-access for a toolchain the
+#                                    sandbox cannot reach at all — Docker, whose
+#                                    daemon socket is a unix socket connect that
+#                                    neither network_access nor writable_roots
+#                                    unblocks. Removes ALL confinement, so a
+#                                    worker can write anywhere on disk; the run
+#                                    warns on stderr whenever it is not default.
+#                                    Cannot be set via SOL_CODEX_CONFIG: an
+#                                    explicit -s beats -c sandbox_mode=.
 #      SOL_CODEX_CONFIG              extra `-c key=value` overrides, space
 #                                    separated, applied to every codex
 #                                    invocation this script makes. The escape
@@ -67,6 +77,16 @@ STALL_RETRIES="${SOL_STALL_RETRIES:-1}"
 # run inside `nohup bash -c '...'`, and the environment is the one channel that
 # reaches every one of them without renumbering their positional arguments.
 export SOL_CODEX_CONFIG="${SOL_CODEX_CONFIG:-}"
+
+# The sandbox policy passed as `-s`. Separate from SOL_CODEX_CONFIG because an
+# explicit `-s` flag beats `-c sandbox_mode=...`: setting the mode through the
+# config channel is silently ignored, which reads as "the escape hatch does not
+# work" rather than "wrong channel". Exported for the same reason as above.
+export SOL_SANDBOX="${SOL_SANDBOX:-workspace-write}"
+if [ "$SOL_SANDBOX" != "workspace-write" ]; then
+  printf 'sol-parallel: sandbox is %s, not workspace-write — workers can write outside the workspace\n' \
+    "$SOL_SANDBOX" >&2
+fi
 
 die() { printf 'sol-parallel: %s\n' "$1" >&2; exit "${2:-2}"; }
 
@@ -337,7 +357,7 @@ launch_workers() {
       cfg=(); for kv in $SOL_CODEX_CONFIG; do cfg+=(-c "$kv"); done
       codex exec --json -m "$1" -c model_reasoning_effort="$2" \
         ${cfg[@]+"${cfg[@]}"} \
-        -s workspace-write --color never -C "$3" \
+        -s "$SOL_SANDBOX" --color never -C "$3" \
         ${img[@]+"${img[@]}"} \
         -o "$4/report.md" - < "$5" \
         > "$4/events.jsonl" 2> "$4/stderr.txt"
@@ -398,7 +418,7 @@ relaunch_stalled() {
       cfg=(); for kv in $SOL_CODEX_CONFIG; do cfg+=(-c "$kv"); done
       codex exec --json -m "$1" -c model_reasoning_effort="$2" \
         ${cfg[@]+"${cfg[@]}"} \
-        -s workspace-write --color never -C "$3" \
+        -s "$SOL_SANDBOX" --color never -C "$3" \
         -o "$4/report.md" - < "$5" \
         > "$4/events.jsonl" 2> "$4/stderr.txt"
       printf "%s\n" "$?" > "$4/exit-code"

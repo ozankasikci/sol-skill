@@ -1,6 +1,6 @@
 ---
 name: sol
-version: "1.7.0"
+version: "1.8.0"
 description: Delegate implementation (or, when explicitly requested, research) to GPT-5.6 Sol (xhigh reasoning) via Codex CLI. Claude plans, orchestrates, and reviews; Sol writes the code.
 argument-hint: "[implementation task]"
 disable-model-invocation: true
@@ -37,6 +37,7 @@ flow below.
 | `SOL_COMMAND_TIMEOUT` | `1800` | Parallel mode: seconds an in-flight command may produce nothing before the worker is stall-killed — bounds the exemption that lets long silent builds run |
 | `SOL_WORKER_TIMEOUT` | off | Parallel mode: optional absolute per-worker cap in seconds. Off by default — a task's duration is not predictable, so any constant kills productive workers; the budgets above bound silence instead |
 | `SOL_STALL_RETRIES` | `1` | Parallel mode: automatic relaunches of a stalled worker, each a fresh session one effort step lower (`xhigh → high → medium → low`) |
+| `SOL_SANDBOX` | `workspace-write` | Sandbox policy passed as `-s`. `danger-full-access` for a toolchain the sandbox cannot reach at all (Docker). Removes all confinement; the run warns on stderr. Cannot be set via `SOL_CODEX_CONFIG` |
 | `SOL_CODEX_CONFIG` | unset | Extra `-c key=value` overrides, space separated, applied to every codex invocation the launcher makes. See **Sandboxed toolchains** below. Values must not contain spaces |
 
 **Task tracking:** If harness task tools are available, call TaskCreate at the start (short title from the request, status in_progress), TaskUpdate once per phase transition (planning → Sol implementing → reviewing → corrections), and TaskUpdate to completed in the final report — or leave it in_progress with a note if blocked. Keep updates to one line; skip entirely if the tools are unavailable.
@@ -103,6 +104,14 @@ Diagnose it by running the project's own build inside a throwaway `codex exec` a
 ```bash
 export SOL_CODEX_CONFIG='sandbox_workspace_write.network_access=true sandbox_workspace_write.writable_roots=["/abs/path/to/main-repo/.git"]'
 ```
+
+**Docker is a different case.** Its daemon socket is a *unix socket connect*, which neither `network_access` nor `writable_roots` unblocks — verified: both leave `docker ps` failing with `connect: operation not permitted`. Nor can `SOL_CODEX_CONFIG` fix it, because an explicit `-s` flag beats `-c sandbox_mode=`, so setting the mode through the config channel is silently ignored. The only thing that works is replacing the policy:
+
+```bash
+export SOL_SANDBOX=danger-full-access
+```
+
+That removes **all** confinement, not one restriction: the worker can write anywhere on disk. The run warns on stderr every time it is not the default. Prefer starting containers up-front from `SOL_WORKTREE_SETUP`, outside the sandbox where you control their lifecycle — nothing in `--cleanup` knows about a container a worker started, so it outlives the run.
 
 Validate any key with `codex exec --strict-config`, which errors on unrecognized fields — note that `[projects."<path>"]` sections in `~/.codex/config.toml` accept only `trust_level`, so sandbox settings cannot be scoped to a repo that way. Keep this an explicit per-repo opt-in: granting network removes the sandbox's main protection against a worker fetching or exfiltrating, and that is the caller's call, not a default. Tell Sol in the brief which checks it is expected to run and which are known-blocked — a worker that knows a check is unavailable reports that plainly instead of burning its budget inventing workarounds.
 

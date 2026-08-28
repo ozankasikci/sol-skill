@@ -4,6 +4,23 @@ All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.0] — 2026-08-23
+
+### Added
+
+- `SOL_SANDBOX` (default `workspace-write`) sets the `-s` policy for every codex
+  invocation. It exists because `SOL_CODEX_CONFIG` structurally cannot reach the
+  sandbox mode: an explicit `-s` flag beats `-c sandbox_mode=`, so setting it
+  through the config channel is silently ignored — verified with both on one
+  command, which still failed. Any non-default value warns on stderr, since
+  `danger-full-access` removes all confinement rather than one restriction.
+- SKILL.md now covers Docker specifically. Its daemon socket is a unix socket
+  connect, which neither `network_access` nor `writable_roots` unblocks —
+  verified, both leave `docker ps` at `connect: operation not permitted`.
+  Verified end to end through the launcher: the same brief gets permission
+  denied under the default sandbox and lists real containers under
+  `SOL_SANDBOX=danger-full-access`.
+
 ## [1.7.0] — 2026-08-23
 
 ### Added
