@@ -1714,7 +1714,9 @@ with tempfile.TemporaryDirectory() as tmp:
     run_dir = root / "run"
     write_tasks(run_dir, "flaky")
     arglog = root / "args.log"
-    env = stall_env(bin_dir, FAKE_STALL_EFFORTS="xhigh", FAKE_ARGLOG=str(arglog),
+    # No SOL_EFFORT: this exercises the shipped default, which is `high`, so the
+    # stall is simulated at `high` and the ladder must step to `medium`.
+    env = stall_env(bin_dir, FAKE_STALL_EFFORTS="high", FAKE_ARGLOG=str(arglog),
                     SOL_FIRST_EVENT_TIMEOUT="3", SOL_STALL_RETRIES="1")
     try:
         r = subprocess.run(
@@ -1730,27 +1732,29 @@ with tempfile.TemporaryDirectory() as tmp:
         check((w / "events-attempt-1.jsonl").exists(),
               "the stalled attempt's event log is archived, not overwritten")
         args = arglog.read_text()
-        check("model_reasoning_effort=xhigh" in args
-              and "model_reasoning_effort=high" in args,
-              f"codex was invoked at xhigh then relaunched at high (args: {args!r})")
+        check("model_reasoning_effort=high" in args
+              and "model_reasoning_effort=medium" in args
+              and "model_reasoning_effort=xhigh" not in args,
+              f"codex launched at the default high and relaunched at medium "
+              f"(args: {args!r})")
         # ...and the relaunch runs in that worker's own worktree. The workspace
         # is looked up per worker now rather than recomputed, so this is the
         # worktree-mode half of that lookup.
         wt = pathlib.Path(os.path.realpath(root)) / ".sol-worktrees" / "repo" / "flaky"
-        retry = [l for l in args.splitlines() if "model_reasoning_effort=high" in l]
+        retry = [l for l in args.splitlines() if "model_reasoning_effort=medium" in l]
         check(len(retry) == 1 and f"-C {wt} " in f"{retry[0]} ",
               f"a worktree-mode relaunch still runs in $WORKTREE_ROOT/<slug> "
               f"(retry args: {retry!r})")
         summary = json.loads((run_dir / "summary.json").read_text())
         wk = summary["workers"][0]
-        check(wk["effort_used"] == "high" and wk["stall_retries"] == 1,
-              f"summary records effort_used=high, stall_retries=1 "
+        check(wk["effort_used"] == "medium" and wk["stall_retries"] == 1,
+              f"summary records effort_used=medium, stall_retries=1 "
               f"(got {wk['effort_used']!r}, {wk['stall_retries']})")
         check(wk["status"] == "ok" and wk["commit"],
               "summary shows the recovered worker committed real work")
     except subprocess.TimeoutExpired:
         for label in ("retry run exits 0", "relaunched worker ok",
-                      "attempt log archived", "xhigh then high",
+                      "attempt log archived", "high then medium",
                       "summary effort/retries", "recovered commit"):
             check(False, f"{label} (run timed out instead)")
 
@@ -1769,7 +1773,7 @@ with tempfile.TemporaryDirectory() as tmp:
     # bare "No such file or directory", and landed in summary.json as
     # failed-launch/exit 1/elapsed 2 -- a stall recovery reported as a broken
     # invocation. Observed in production on a real xhigh stall.
-    env = stall_env(bin_dir, FAKE_STALL_EFFORTS="xhigh", FAKE_ARGLOG=str(arglog),
+    env = stall_env(bin_dir, FAKE_STALL_EFFORTS="high", FAKE_ARGLOG=str(arglog),
                     SOL_FIRST_EVENT_TIMEOUT="3", SOL_STALL_RETRIES="1")
     repo_root = git(repo, "rev-parse", "--show-toplevel")
     try:
@@ -1780,11 +1784,11 @@ with tempfile.TemporaryDirectory() as tmp:
         )
         w = run_dir / "workers" / "inplace"
         args = arglog.read_text() if arglog.exists() else ""
-        retry = [l for l in args.splitlines() if "model_reasoning_effort=high" in l]
+        retry = [l for l in args.splitlines() if "model_reasoning_effort=medium" in l]
         check(len(retry) == 1 and f"-C {repo_root} " in f"{retry[0]} ",
               f"the in-place relaunch runs in the repo itself (retry args: {retry!r})")
-        check((w / "effort").read_text().strip() == "high",
-              f"the retry stepped the effort down to high "
+        check((w / "effort").read_text().strip() == "medium",
+              f"the retry stepped the effort down to medium "
               f"(got {(w / 'effort').read_text().strip()!r})")
         check((w / "stall-retries").read_text().strip() == "1",
               "records one stall retry")
@@ -1798,7 +1802,7 @@ with tempfile.TemporaryDirectory() as tmp:
         check(not (root / ".sol-worktrees").exists(),
               "no worktree is created for an in-place relaunch")
     except subprocess.TimeoutExpired:
-        for label in ("in-place relaunch runs in the repo", "retry effort high",
+        for label in ("in-place relaunch runs in the repo", "retry effort medium",
                       "one stall retry recorded", "recovered in-place worker ok",
                       "in-place stall run exits 0", "work landed in the repo",
                       "no worktree created"):

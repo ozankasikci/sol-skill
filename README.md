@@ -64,7 +64,7 @@ That is not a small bias. It is the exact failure mode behind the endorsements y
 | | Model | Job | Never does |
 |---|---|---|---|
 | **Planner / reviewer** | Claude (your Claude Code session) | Writes the brief, reviews the real diff, re-runs the checks itself, directs corrections | Never edits production code |
-| **Implementer** | GPT-5.6 Sol at `xhigh` reasoning, via Codex CLI | All code changes, adds tests, runs the verification loop | Never approves its own work |
+| **Implementer** | GPT-5.6 Sol at `high` reasoning (`xhigh` on request), via Codex CLI | All code changes, adds tests, runs the verification loop | Never approves its own work |
 
 Claude never touches the code. Sol never signs off on it. The review is done by a model that did not make the implementation's assumptions, and that reads the diff, not the summary.
 
@@ -79,7 +79,7 @@ Five phases, and the interesting part is what each one refuses to do.
 **2. Implement.** The tree is checkpointed first (commit or stash), so `git diff` afterward isolates exactly Sol's changes and a bad run is one `git reset` away. The brief goes to a file and is piped in on stdin, so shell quoting cannot damage code snippets:
 
 ```bash
-codex exec --json -m gpt-5.6-sol -c model_reasoning_effort=xhigh \
+codex exec --json -m gpt-5.6-sol -c model_reasoning_effort=high \
   -s workspace-write --color never \
   -o "$SCRATCHPAD/sol-report.md" \
   - < "$SCRATCHPAD/sol-brief.md" \
@@ -312,7 +312,7 @@ Behavior changes by editing it, with two exceptions that survive a skill update:
 
 **Use a different implementer.** The model is passed explicitly with `-m`, so swap it for any model your Codex CLI can reach. Nothing else in the flow assumes Sol specifically.
 
-**Change the reasoning effort.** `xhigh` is the default because implementation quality is the thing being bought here. It's slow, and the skill budgets a 10-minute timeout to match. Lower the effort and you can lower the timeout with it.
+**Change the reasoning effort.** `high` is the default: with a compiler and tests in the loop it verifies its own work, and stalls are effort-correlated — an `xhigh` worker that hangs burns the whole first-event budget before making a single tool call (observed: 900s of silence at `xhigh`, a first tool call in 36s at `high` on the same brief). Set `SOL_EFFORT=xhigh` for algorithmically hard briefs, and budget a longer timeout to match; research mode already runs at `xhigh`, because nothing there compiles.
 
 **Change the correction budget.** Two rounds is a deliberate stopping rule, not a tuning knob I'd raise casually; an agent on round five of the same bug isn't converging.
 
@@ -356,8 +356,9 @@ also loops: failures go back to the implementer as a `file:line` delta, twice at
 (For high-risk changes it *also* runs `codex exec review` as a third fresh-eyes pass.)
 
 **Is it slower than normal Claude Code?**
-Yes, materially. `xhigh` reasoning is the point of the trade, and the worked example above
-took 8m02s for a one-file change. Use it for work where being right matters more than
+Yes, materially. Reasoning effort from a second frontier model is the point of the trade,
+and the worked example above — run at `xhigh`, above today's `high` default — took 8m02s
+for a one-file change. Use it for work where being right matters more than
 being fast; use plain Claude Code for the rest. It's `disable-model-invocation: true`
 precisely so nothing routes through it unless you ask.
 

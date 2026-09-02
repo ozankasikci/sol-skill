@@ -6,6 +6,22 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [1.8.1] — 2026-09-02
 
+### Changed
+
+- **`SOL_EFFORT` now defaults to `high`, not `xhigh`.** Stalls are
+  effort-correlated (openai/codex#24260, #23807), and the cost is asymmetric: a
+  stalled worker burns the entire first-event budget before it does anything at
+  all. Observed on the same brief — an `xhigh` worker sat 900s without a single
+  tool call, while `high` made its first call in 36s. With a compiler and a test
+  suite in the loop, `high` verifies its own work, which is the property the
+  effort was buying. `xhigh` stays available as an explicit opt-in for
+  algorithmically hard briefs, and research mode still writes it out, because
+  nothing there compiles. The stall ladder is unchanged, so a `high` launch now
+  degrades to `medium` on a stall.
+- **`SOL_FIRST_EVENT_TIMEOUT` now defaults to `300` seconds, not `900`.** A real
+  think before the first file read rarely runs past five minutes; 900 turned a
+  single stall into fifteen lost minutes before the retry could even start.
+
 ### Fixed
 
 - **An `--in-place` run could not be relaunched, resumed or cleaned up.** Only
