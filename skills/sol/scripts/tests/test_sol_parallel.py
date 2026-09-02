@@ -1733,6 +1733,14 @@ with tempfile.TemporaryDirectory() as tmp:
         check("model_reasoning_effort=xhigh" in args
               and "model_reasoning_effort=high" in args,
               f"codex was invoked at xhigh then relaunched at high (args: {args!r})")
+        # ...and the relaunch runs in that worker's own worktree. The workspace
+        # is looked up per worker now rather than recomputed, so this is the
+        # worktree-mode half of that lookup.
+        wt = pathlib.Path(os.path.realpath(root)) / ".sol-worktrees" / "repo" / "flaky"
+        retry = [l for l in args.splitlines() if "model_reasoning_effort=high" in l]
+        check(len(retry) == 1 and f"-C {wt} " in f"{retry[0]} ",
+              f"a worktree-mode relaunch still runs in $WORKTREE_ROOT/<slug> "
+              f"(retry args: {retry!r})")
         summary = json.loads((run_dir / "summary.json").read_text())
         wk = summary["workers"][0]
         check(wk["effort_used"] == "high" and wk["stall_retries"] == 1,
@@ -1745,6 +1753,131 @@ with tempfile.TemporaryDirectory() as tmp:
                       "attempt log archived", "xhigh then high",
                       "summary effort/retries", "recovered commit"):
             check(False, f"{label} (run timed out instead)")
+
+print("--in-place: a stalled worker relaunches in the repo, not a worktree that was never created")
+with tempfile.TemporaryDirectory() as tmp:
+    root = pathlib.Path(tmp)
+    bin_dir = root / "bin"
+    install_fake_codex(bin_dir)
+    repo = make_repo(root / "repo")
+    run_dir = root / "run"
+    write_tasks(run_dir, "inplace")
+    arglog = root / "args.log"
+    # The workspace used to be recomputed as "$WORKTREE_ROOT/<slug>" on every
+    # path but the launch. For an in-place run that directory does not exist, so
+    # the retry ran `codex exec -C <nonexistent>`, died in two seconds with a
+    # bare "No such file or directory", and landed in summary.json as
+    # failed-launch/exit 1/elapsed 2 -- a stall recovery reported as a broken
+    # invocation. Observed in production on a real xhigh stall.
+    env = stall_env(bin_dir, FAKE_STALL_EFFORTS="xhigh", FAKE_ARGLOG=str(arglog),
+                    SOL_FIRST_EVENT_TIMEOUT="3", SOL_STALL_RETRIES="1")
+    repo_root = git(repo, "rev-parse", "--show-toplevel")
+    try:
+        r = subprocess.run(
+            ["bash", str(SCRIPT), "--workers", "1", "--in-place", str(run_dir)],
+            cwd=repo, capture_output=True, text=True, check=False, env=env,
+            timeout=40,
+        )
+        w = run_dir / "workers" / "inplace"
+        args = arglog.read_text() if arglog.exists() else ""
+        retry = [l for l in args.splitlines() if "model_reasoning_effort=high" in l]
+        check(len(retry) == 1 and f"-C {repo_root} " in f"{retry[0]} ",
+              f"the in-place relaunch runs in the repo itself (retry args: {retry!r})")
+        check((w / "effort").read_text().strip() == "high",
+              f"the retry stepped the effort down to high "
+              f"(got {(w / 'effort').read_text().strip()!r})")
+        check((w / "stall-retries").read_text().strip() == "1",
+              "records one stall retry")
+        s = json.loads((run_dir / "summary.json").read_text())
+        check(s["workers"][0]["status"] == "ok",
+              f"the recovered in-place worker is ok, not failed-launch "
+              f"(got {s['workers'][0]['status']!r}, stderr: {r.stderr[:300]})")
+        check(r.returncode == 0, f"the run exits 0 (stderr: {r.stderr[:200]})")
+        check((repo / "inplace.txt").is_file(),
+              "the relaunched worker's work landed in the repo working tree")
+        check(not (root / ".sol-worktrees").exists(),
+              "no worktree is created for an in-place relaunch")
+    except subprocess.TimeoutExpired:
+        for label in ("in-place relaunch runs in the repo", "retry effort high",
+                      "one stall retry recorded", "recovered in-place worker ok",
+                      "in-place stall run exits 0", "work landed in the repo",
+                      "no worktree created"):
+            check(False, f"{label} (run timed out instead)")
+
+print("--in-place: --resume re-attaches in the repo without retyping --in-place")
+with tempfile.TemporaryDirectory() as tmp:
+    root = pathlib.Path(tmp)
+    bin_dir = root / "bin"
+    install_fake_codex(bin_dir)
+    repo = make_repo(root / "repo")
+    run_dir = root / "run"
+    write_tasks(run_dir, "inplace")
+    r = run(repo, bin_dir, "--workers", "1", "--in-place", str(run_dir))
+    check(r.returncode == 0, f"the in-place launch exits 0 (stderr: {r.stderr[:200]})")
+    check((run_dir / "in-place").is_file(),
+          "the run directory records that this run was in-place")
+
+    # Remove the launch's output so the resumed worker has to recreate it. The
+    # fake codex writes into its own cwd, which for a resume is the `cd` target
+    # the script passes -- so the file coming back proves where it ran.
+    (repo / "inplace.txt").unlink()
+    (run_dir / "workers" / "inplace" / "correction.md").write_text(
+        "inplace.txt:1 - please redo this.\n")
+
+    arglog = root / "args.log"
+    env = dict(os.environ)
+    env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
+    env["FAKE_ARGLOG"] = str(arglog)
+    # Deliberately WITHOUT --in-place: re-attaching used to cd into
+    # "$WORKTREE_ROOT/<slug>", so the wrapper's `cd || exit 2` fired instantly
+    # and the resume did nothing at all.
+    r = subprocess.run(["bash", str(SCRIPT), "--resume", str(run_dir)],
+                       cwd=repo, capture_output=True, text=True, check=False,
+                       env=env, timeout=60)
+    check(r.returncode == 0,
+          f"--resume without --in-place exits 0 (stderr: {r.stderr[:300]})")
+    args = arglog.read_text() if arglog.exists() else ""
+    check("resume" in args and "019f-inplace" in args,
+          f"the resume really invoked codex exec resume (args: {args!r})")
+    check((repo / "inplace.txt").is_file(),
+          "the resumed worker ran in the repo itself, recreating its file there")
+    check(not (root / ".sol-worktrees").exists(),
+          "the resume creates no worktree")
+    s = json.loads((run_dir / "summary.json").read_text())
+    check(s["workers"][0]["status"] == "ok",
+          f"the resumed in-place worker is ok (got {s['workers'][0]['status']!r})")
+    check(s["workers"][0]["commit"] == "",
+          "an in-place resume still makes no commit")
+
+print("--in-place: --cleanup is a no-op that never touches the repo")
+with tempfile.TemporaryDirectory() as tmp:
+    root = pathlib.Path(tmp)
+    bin_dir = root / "bin"
+    install_fake_codex(bin_dir)
+    repo = make_repo(root / "repo")
+    run_dir = root / "run"
+    write_tasks(run_dir, "inplace")
+    r = run(repo, bin_dir, "--workers", "1", "--in-place", str(run_dir))
+    check(r.returncode == 0, f"the in-place launch exits 0 (stderr: {r.stderr[:200]})")
+    head_before = git(repo, "rev-parse", "HEAD")
+    branches_before = git(repo, "branch", "--list")
+
+    # Again without --in-place, and again the dangerous direction: the repo may
+    # itself be a linked worktree, so a cleanup that recomputed a path and ran
+    # `git worktree remove` against $REPO_ROOT would delete the user's checkout.
+    r = run(repo, bin_dir, "--cleanup", str(run_dir))
+    check(r.returncode == 0, f"--cleanup on an in-place run exits 0 (stderr: {r.stderr[:200]})")
+    check("in-place" in r.stdout and "no worktrees or branches" in r.stdout,
+          f"says there is nothing to clean up rather than staying silent "
+          f"(stdout: {r.stdout!r})")
+    check("kept:" not in r.stdout,
+          f"reports no worktrees at all, kept or removed (stdout: {r.stdout!r})")
+    check((repo / "inplace.txt").is_file(),
+          "the worker's uncommitted work is still in the repo after --cleanup")
+    check((repo / "README.md").is_file(), "the repo checkout itself is untouched")
+    check(git(repo, "rev-parse", "HEAD") == head_before, "HEAD is untouched")
+    check(git(repo, "branch", "--list") == branches_before,
+          "no branch is created or deleted")
 
 print("stall watchdog: a quiet command outlasting the idle budget is not a stall")
 with tempfile.TemporaryDirectory() as tmp:

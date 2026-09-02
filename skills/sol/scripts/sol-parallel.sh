@@ -188,6 +188,31 @@ WORKTREE_ROOT="$(cd "$REPO_ROOT/.." && pwd)/.sol-worktrees/$REPO_NAME"
 TASKS_DIR="$RUN_DIR/tasks"
 OUT_DIR="$RUN_DIR/workers"
 
+# --in-place is a property of the RUN, not of the invocation that re-attaches to
+# it. Every path below that needs a workspace used to recompute
+# "$WORKTREE_ROOT/$slug", which does not exist for an in-place run: the stall
+# relaunch ran `codex exec -C <nonexistent>` and died in two seconds, --resume
+# exited 2 instantly, and --cleanup pointed at a worktree that was never
+# created. The marker means `--wait`, `--resume` and `--cleanup` behave without
+# the caller retyping the flag -- which nothing in the output ever prompted for.
+[ -f "$RUN_DIR/in-place" ] && IN_PLACE=1
+
+# The recorded workspace of one worker. Recorded beats recomputed for the same
+# reason `brief` is a file rather than a glob (see create_worktrees): the run
+# knows where it put the worker, and later invocations can only guess. The
+# fallbacks cover a run directory written before `worktree` existed.
+worktree_of() {
+  local path
+  path="$(cat "$OUT_DIR/$1/worktree" 2>/dev/null)"
+  if [ -n "$path" ]; then
+    printf '%s' "$path"
+  elif [ "$IN_PLACE" -eq 1 ]; then
+    printf '%s' "$REPO_ROOT"
+  else
+    printf '%s' "$WORKTREE_ROOT/$1"
+  fi
+}
+
 preflight_launch() {
   local ceiling="${SOL_MAX_WORKERS:-3}"
   [ -d "$TASKS_DIR" ] || die "no briefs: $TASKS_DIR does not exist"
@@ -280,6 +305,11 @@ create_worktrees() {
   mkdir -p "$OUT_DIR"
   [ "$IN_PLACE" -eq 1 ] || mkdir -p "$WORKTREE_ROOT"
   printf '%s\t%s\n' "$branch" "$sha" > "$RUN_DIR/base"
+  if [ "$IN_PLACE" -eq 1 ]; then
+    : > "$RUN_DIR/in-place"
+  else
+    rm -f "$RUN_DIR/in-place"
+  fi
 
   SLUGS=(); WORKTREES=(); BRIEF_OF=()
   for brief in "${BRIEFS[@]}"; do
@@ -318,6 +348,10 @@ create_worktrees() {
     # Record the brief now. Recovering it later by globbing `*-<slug>.md` is
     # ambiguous: brief `01-add-auth.md` also matches slug `auth`.
     printf '%s\n' "${BRIEF_OF[i]}" > "$OUT_DIR/$slug/brief"
+    # And the workspace, for the same reason: --wait, --resume, --cleanup and
+    # the stall relaunch all need to know where this worker runs, and only the
+    # launch knows whether that is a worktree or the repo itself.
+    printf '%s\n' "$wt" > "$OUT_DIR/$slug/worktree"
     printf '%s' "${IMAGES_OF[i]:-}" > "$OUT_DIR/$slug/images"
     if [ "$IN_PLACE" -eq 1 ]; then
       # The repo is the workspace. Nothing to create, nothing to bootstrap:
@@ -395,9 +429,14 @@ relaunch_stalled() {
   : > "$RUN_DIR/pids"
   for slug in "${stalled[@]}"; do
     w="$OUT_DIR/$slug"
-    wt="$WORKTREE_ROOT/$slug"
+    wt="$(worktree_of "$slug")"
     brief="$(cat "$w/brief" 2>/dev/null)"
     [ -f "$brief" ] || { printf 'sol-parallel: %s: brief missing, cannot relaunch\n' "$slug" >&2; continue; }
+    # Say which directory and why. Launching anyway hands codex a `-C` it cannot
+    # chdir into: it exits in about two seconds with a bare "No such file or
+    # directory", the retry lands in summary.json as failed-launch with an
+    # elapsed of 2, and the reviewer goes looking for a broken invocation.
+    [ -d "$wt" ] || { printf 'sol-parallel: %s: workspace %s missing, cannot relaunch\n' "$slug" "$wt" >&2; continue; }
 
     n=1
     while [ -e "$w/events-attempt-$n.jsonl" ]; do n=$((n + 1)); done
@@ -432,12 +471,19 @@ relaunch_stalled() {
 }
 
 resume_workers() {
-  local slug w pid n pending=0
+  local slug w wt pid n pending=0
   : > "$RUN_DIR/pids"
   while read -r slug; do
     [ -n "$slug" ] || continue
     w="$OUT_DIR/$slug"
     [ -f "$w/correction.md" ] || continue
+    wt="$(worktree_of "$slug")"
+    if [ ! -d "$wt" ]; then
+      # The resume wrapper's `cd "$3" || exit 2` would otherwise fail silently
+      # into an exit 2 with nothing written anywhere explaining it.
+      printf 'sol-parallel: %s: workspace %s missing, cannot resume\n' "$slug" "$wt" >&2
+      continue
+    fi
     if [ ! -s "$w/session-id" ]; then
       # Never launched (failed-setup) or its event log was empty, so there is
       # no session to resume. `codex exec resume ""` would be nonsense.
@@ -465,7 +511,7 @@ resume_workers() {
         -o "$4/report.md" "$(cat "$5")" \
         > "$4/events.jsonl" 2> "$4/stderr.txt" < /dev/null
       printf "%s\n" "$?" > "$4/exit-code"
-    ' _ "$MODEL" "$EFFORT" "$WORKTREE_ROOT/$slug" "$w" "$w/correction-$n.md" \
+    ' _ "$MODEL" "$EFFORT" "$wt" "$w" "$w/correction-$n.md" \
         "$(cat "$w/session-id")" >/dev/null 2>&1 &
     pid=$!
     disown "$pid" 2>/dev/null
@@ -504,7 +550,7 @@ rehydrate() {
   while read -r slug; do
     [ -n "$slug" ] || continue
     SLUGS+=("$slug")
-    WORKTREES+=("$WORKTREE_ROOT/$slug")
+    WORKTREES+=("$(worktree_of "$slug")")
     BRIEF_OF+=("$(cat "$OUT_DIR/$slug/brief" 2>/dev/null)")
   done < <(roster)
 }
@@ -839,7 +885,7 @@ cleanup_run() {
   fi
   while read -r slug; do
     [ -n "$slug" ] || continue
-    wt="$WORKTREE_ROOT/$slug"
+    wt="$(worktree_of "$slug")"
 
     if ! git show-ref --verify --quiet "refs/heads/sol/$slug"; then
       # No branch to check merge-base against: already cleaned up by a prior
@@ -946,6 +992,14 @@ fi
 # below.
 if [ "$MODE" = "cleanup" ]; then
   [ -f "$RUN_DIR/pids.all" ] || die "no completed run in $RUN_DIR"
+  if [ "$IN_PLACE" -eq 1 ]; then
+    # Nothing was created, so there is nothing to remove -- and the workspace is
+    # the user's own checkout, which may itself be a linked worktree. Running
+    # cleanup_run against it would offer `git worktree remove` the user's
+    # checkout.
+    printf 'sol-parallel: in-place run: no worktrees or branches to remove\n'
+    exit 0
+  fi
   cleanup_run
   exit 0
 fi

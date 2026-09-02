@@ -4,6 +4,37 @@ All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.1] — 2026-09-02
+
+### Fixed
+
+- **An `--in-place` run could not be relaunched, resumed or cleaned up.** Only
+  the launch knew about `--in-place`; every path after it recomputed the
+  workspace as `$WORKTREE_ROOT/<slug>`, a directory an in-place run never
+  creates. The stall relaunch therefore ran `codex exec -C <nonexistent>`, died
+  in about two seconds with a bare "No such file or directory", and recorded
+  `failed-launch`, exit 1, elapsed 2 — a stall recovery that reads as a broken
+  invocation, on precisely the runs the watchdog exists to save. Seen in
+  production: an `xhigh` worker stalled at 900s and its `high` retry never ran.
+  `--resume` failed the same way (the wrapper's `cd` fell straight through to
+  its `exit 2`), and `--cleanup` pointed at a worktree that never existed.
+
+  In-place mode is now remembered in the run directory rather than inferred from
+  the command line. Each worker's workspace is written to
+  `<run-dir>/workers/<slug>/worktree` at launch, next to `brief`, and read back
+  instead of recomputed; `<run-dir>/in-place` marks the run itself, so `--wait`,
+  `--resume` and `--cleanup` re-attach correctly without the caller retyping
+  `--in-place` — which nothing in the output ever prompted for.
+
+- The stall relaunch and `--resume` now check the workspace exists before
+  launching and say `workspace <path> missing` with the slug, rather than
+  leaving codex to fail with an opaque OS error two seconds later.
+
+- `--cleanup` on an in-place run prints one line saying there are no worktrees
+  or branches to remove and exits 0 without touching anything. The workspace
+  there is the user's own checkout, which may itself be a linked worktree, so a
+  path that reached `git worktree remove` would have deleted it.
+
 ## [1.8.0] — 2026-08-23
 
 ### Added
