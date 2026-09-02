@@ -390,6 +390,14 @@ First public release.
   test/lint/typecheck commands itself — none of which are `codex exec` calls, so all
   of them were blocked.
 
+[1.8.1]: https://github.com/ozankasikci/sol-skill/releases/tag/v1.8.1
+[1.8.0]: https://github.com/ozankasikci/sol-skill/releases/tag/v1.8.0
+[1.7.0]: https://github.com/ozankasikci/sol-skill/releases/tag/v1.7.0
+[1.6.0]: https://github.com/ozankasikci/sol-skill/releases/tag/v1.6.0
+[1.5.0]: https://github.com/ozankasikci/sol-skill/releases/tag/v1.5.0
+[1.4.2]: https://github.com/ozankasikci/sol-skill/releases/tag/v1.4.2
+[1.4.1]: https://github.com/ozankasikci/sol-skill/releases/tag/v1.4.1
+[1.4.0]: https://github.com/ozankasikci/sol-skill/releases/tag/v1.4.0
 [1.3.0]: https://github.com/ozankasikci/sol-skill/releases/tag/v1.3.0
 [1.2.1]: https://github.com/ozankasikci/sol-skill/releases/tag/v1.2.1
 [1.2.0]: https://github.com/ozankasikci/sol-skill/releases/tag/v1.2.0
