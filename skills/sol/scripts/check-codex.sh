@@ -3,12 +3,12 @@
 # authenticated, and pointed at a usable model. Runs no research and edits nothing.
 #
 # Usage: bash scripts/check-codex.sh [--json] [model]
-#   model  defaults to gpt-5.6-sol
+#   model  defaults to gpt-6-sol
 
 set -uo pipefail
 
 json=0
-MODEL="gpt-5.6-sol"
+MODEL="gpt-6-sol"
 model_set=0
 for arg in "$@"; do
   if [ "$arg" = "--json" ]; then

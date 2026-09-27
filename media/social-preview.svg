@@ -34,7 +34,7 @@
     <text x="460" y="378" text-anchor="middle" font-size="30" fill="#484f58">&#8594;</text>
     <g>
       <rect x="490" y="330" width="300" height="76" rx="38" fill="#10a37f" fill-opacity="0.13" stroke="#10a37f" stroke-opacity="0.55" stroke-width="1.5"/>
-      <text x="640" y="368" text-anchor="middle" font-size="15" font-weight="700" letter-spacing="3.2" fill="#10a37f">GPT-5.6 SOL</text>
+      <text x="640" y="368" text-anchor="middle" font-size="15" font-weight="700" letter-spacing="3.2" fill="#10a37f">GPT-6 SOL</text>
       <text x="640" y="393" text-anchor="middle" font-size="23" font-weight="500" fill="#e6edf3">implements</text>
     </g>
     <text x="820" y="378" text-anchor="middle" font-size="30" fill="#484f58">&#8594;</text>

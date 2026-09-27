@@ -4,6 +4,20 @@ All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.9.0] — 2026-09-27
+
+### Changed
+
+- **The implementer is now GPT-6 Sol (`gpt-6-sol`).** The default model in
+  `sol-parallel.sh` (`SOL_MODEL`), `check-codex.sh`, and every command in
+  `SKILL.md` and the README moved from `gpt-5.6-sol`. The README's worked
+  example keeps its original `gpt-5.6-sol` transcript, since that is the run
+  that was actually recorded.
+- **`SOL_EFFORT` defaults to `xhigh` again.** The stall ladder and the
+  300-second first-event budget from 1.8.1 stay, so a stalled `xhigh` launch
+  costs at most that budget and then relaunches at `high`. Set
+  `SOL_EFFORT=high` for mechanical briefs where speed matters more.
+
 ## [1.8.1] — 2026-09-02
 
 ### Changed
@@ -390,6 +404,7 @@ First public release.
   test/lint/typecheck commands itself — none of which are `codex exec` calls, so all
   of them were blocked.
 
+[1.9.0]: https://github.com/ozankasikci/sol-skill/releases/tag/v1.9.0
 [1.8.1]: https://github.com/ozankasikci/sol-skill/releases/tag/v1.8.1
 [1.8.0]: https://github.com/ozankasikci/sol-skill/releases/tag/v1.8.0
 [1.7.0]: https://github.com/ozankasikci/sol-skill/releases/tag/v1.7.0

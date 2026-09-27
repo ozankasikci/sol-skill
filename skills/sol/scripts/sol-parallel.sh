@@ -30,17 +30,12 @@
 #                                    duration is not predictable, so any
 #                                    constant kills productive workers. The
 #                                    budgets below bound silence instead.
-#      SOL_EFFORT (high)             reasoning effort every worker launches at.
-#                                    `high` rather than `xhigh`: stalls are
-#                                    effort-correlated (openai/codex#24260,
-#                                    #23807), and with a compiler and tests in
-#                                    the loop `high` verifies its own work. An
-#                                    xhigh stall costs the whole first-event
-#                                    budget before anything happens at all —
-#                                    observed: an xhigh worker sat 900s with no
-#                                    tool call, the same brief at high made its
-#                                    first call in 36s. Set xhigh explicitly for
-#                                    algorithmically hard briefs.
+#      SOL_EFFORT (xhigh)            reasoning effort every worker launches at.
+#                                    A stall at xhigh is caught by the
+#                                    first-event budget below and relaunched one
+#                                    step lower, so the default costs at most
+#                                    that budget. Set high (or lower) for
+#                                    mechanical briefs where speed matters more.
 #      SOL_FIRST_EVENT_TIMEOUT (300) kill a worker whose event log still holds
 #                                    nothing but thread/turn bookkeeping after
 #                                    this many seconds (codex hangs at high
@@ -79,8 +74,8 @@
 
 set -uo pipefail
 
-MODEL="${SOL_MODEL:-gpt-5.6-sol}"
-EFFORT="${SOL_EFFORT:-high}"
+MODEL="${SOL_MODEL:-gpt-6-sol}"
+EFFORT="${SOL_EFFORT:-xhigh}"
 WORKER_TIMEOUT="${SOL_WORKER_TIMEOUT:-0}"        # 0 = no absolute cap
 FIRST_EVENT_TIMEOUT="${SOL_FIRST_EVENT_TIMEOUT:-300}"
 IDLE_TIMEOUT="${SOL_IDLE_TIMEOUT:-600}"

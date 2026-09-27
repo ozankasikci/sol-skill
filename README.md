@@ -2,12 +2,12 @@
 
 <p align="center">
   <img src="media/social-preview.png" width="820"
-       alt="/sol, a Claude Code skill: Claude plans, GPT-5.6 Sol implements via Codex CLI, Claude reviews the diff" />
+       alt="/sol, a Claude Code skill: Claude plans, GPT-6 Sol implements via Codex CLI, Claude reviews the diff" />
 </p>
 
 **Two frontier models, one job each. The model that wrote the diff never grades it.**
 
-A [Claude Code](https://docs.claude.com/en/docs/claude-code/overview) skill for multi-model AI coding: Claude writes the brief and reviews the real diff, while GPT-5.6 Sol writes the code through the [OpenAI Codex CLI](https://github.com/openai/codex).
+A [Claude Code](https://docs.claude.com/en/docs/claude-code/overview) skill for multi-model AI coding: Claude writes the brief and reviews the real diff, while GPT-6 Sol writes the code through the [OpenAI Codex CLI](https://github.com/openai/codex).
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg?style=flat-square)](LICENSE)
 [![Claude Code](https://img.shields.io/badge/Claude%20Code-plugin-6f42c1?style=flat-square)](https://docs.claude.com/en/docs/claude-code/overview)
@@ -64,7 +64,7 @@ That is not a small bias. It is the exact failure mode behind the endorsements y
 | | Model | Job | Never does |
 |---|---|---|---|
 | **Planner / reviewer** | Claude (your Claude Code session) | Writes the brief, reviews the real diff, re-runs the checks itself, directs corrections | Never edits production code |
-| **Implementer** | GPT-5.6 Sol at `high` reasoning (`xhigh` on request), via Codex CLI | All code changes, adds tests, runs the verification loop | Never approves its own work |
+| **Implementer** | GPT-6 Sol at `xhigh` reasoning, via Codex CLI | All code changes, adds tests, runs the verification loop | Never approves its own work |
 
 Claude never touches the code. Sol never signs off on it. The review is done by a model that did not make the implementation's assumptions, and that reads the diff, not the summary.
 
@@ -79,7 +79,7 @@ Five phases, and the interesting part is what each one refuses to do.
 **2. Implement.** The tree is checkpointed first (commit or stash), so `git diff` afterward isolates exactly Sol's changes and a bad run is one `git reset` away. The brief goes to a file and is piped in on stdin, so shell quoting cannot damage code snippets:
 
 ```bash
-codex exec --json -m gpt-5.6-sol -c model_reasoning_effort=high \
+codex exec --json -m gpt-6-sol -c model_reasoning_effort=xhigh \
   -s workspace-write --color never \
   -o "$SCRATCHPAD/sol-report.md" \
   - < "$SCRATCHPAD/sol-brief.md" \
@@ -88,7 +88,7 @@ codex exec --json -m gpt-5.6-sol -c model_reasoning_effort=high \
 
 `--json` writes a JSONL event log alongside the report — the raw material for the optional [run summary](#summarizing-a-run) below. stderr goes to its own file, since folding it in with `2>&1` would corrupt the log.
 
-The brief is compact XML blocks, not prose: `<task>`, `<acceptance_criteria>`, `<non_goals>`, `<verification_loop>`, `<action_safety>`, `<output_contract>`. GPT-5.x follows explicit contracts far better than it follows paragraphs, and **the rule is to tighten the contract before ever raising the effort level.** Template in [`skills/sol/references/brief-template.md`](skills/sol/references/brief-template.md).
+The brief is compact XML blocks, not prose: `<task>`, `<acceptance_criteria>`, `<non_goals>`, `<verification_loop>`, `<action_safety>`, `<output_contract>`. GPT-6 Sol follows explicit contracts far better than it follows paragraphs, and **the rule is to tighten the contract before ever raising the effort level.** Template in [`skills/sol/references/brief-template.md`](skills/sol/references/brief-template.md).
 
 Acceptance criteria must be checkable. Not "auth is robust", but `pytest tests/test_auth.py passes with 5-attempt lockout covered`. A criterion the reviewer can't run is a criterion nobody enforces.
 
@@ -186,7 +186,7 @@ this repo's own preflight script, so you can read the resulting code in
 </acceptance_criteria>
 ```
 
-**The run.** `codex exec -m gpt-5.6-sol -c model_reasoning_effort=xhigh`: 8m02s wall
+**The run** (recorded on GPT-5.6 Sol, before the move to GPT-6 Sol). `codex exec -m gpt-5.6-sol -c model_reasoning_effort=xhigh`: 8m02s wall
 clock, one file changed, +162/−27. xhigh is not fast; this is the cost of the trade.
 
 **The review.** Sol's report claimed eleven verifications passed. The reviewer re-ran
@@ -254,8 +254,8 @@ bash skills/sol/scripts/check-codex.sh
   ok    version — codex-cli 0.144.6
   ok    'codex exec' available (non-interactive mode)
   ok    authenticated — /Users/you/.codex/auth.json present
-  ok    config default model — gpt-5.6-sol
-  ok    target model 'gpt-5.6-sol' present in local model cache
+  ok    config default model — gpt-6-sol
+  ok    target model 'gpt-6-sol' present in local model cache
   ok    inside a git work tree — diff-based review will work
   ok    working tree clean — Sol's diff will be isolated
 
@@ -279,7 +279,7 @@ bash skills/sol/scripts/check-codex.sh --json
   "ready": true,
   "failures": 0,
   "warnings": 1,
-  "model": "gpt-5.6-sol",
+  "model": "gpt-6-sol",
   "checks": [
     { "name": "codex_on_path", "status": "ok",   "detail": "codex on PATH — /usr/local/bin/codex" },
     { "name": "codex_version", "status": "ok",   "detail": "version — codex-cli 0.144.6" },
@@ -312,7 +312,7 @@ Behavior changes by editing it, with two exceptions that survive a skill update:
 
 **Use a different implementer.** The model is passed explicitly with `-m`, so swap it for any model your Codex CLI can reach. Nothing else in the flow assumes Sol specifically.
 
-**Change the reasoning effort.** `high` is the default: with a compiler and tests in the loop it verifies its own work, and stalls are effort-correlated — an `xhigh` worker that hangs burns the whole first-event budget before making a single tool call (observed: 900s of silence at `xhigh`, a first tool call in 36s at `high` on the same brief). Set `SOL_EFFORT=xhigh` for algorithmically hard briefs, and budget a longer timeout to match; research mode already runs at `xhigh`, because nothing there compiles.
+**Change the reasoning effort.** `xhigh` is the default. Set `SOL_EFFORT=high` for mechanical briefs where speed matters more than depth; a compiler and tests still catch mistakes there. Stalls are effort-correlated, so the launcher kills a worker that stays silent past `SOL_FIRST_EVENT_TIMEOUT` and relaunches it one step lower. Research mode always runs at `xhigh`, because nothing there compiles.
 
 **Change the correction budget.** Two rounds is a deliberate stopping rule, not a tuning knob I'd raise casually; an agent on round five of the same bug isn't converging.
 
@@ -330,9 +330,9 @@ Unset by default, and worth keeping that way until a build error names what it n
 
 ## FAQ
 
-**How do I use GPT-5 and Claude together for coding?**
+**How do I use GPT-6 and Claude together for coding?**
 That's what this skill is for. Claude Code stays your interface and does the planning and
-review; the Codex CLI runs GPT-5.6 Sol as the implementer in the same working tree. You
+review; the Codex CLI runs GPT-6 Sol as the implementer in the same working tree. You
 type `/sol <task>` and the handoff, the diff review, and the correction loop are handled
 for you.
 
@@ -357,7 +357,7 @@ also loops: failures go back to the implementer as a `file:line` delta, twice at
 
 **Is it slower than normal Claude Code?**
 Yes, materially. Reasoning effort from a second frontier model is the point of the trade,
-and the worked example above — run at `xhigh`, above today's `high` default — took 8m02s
+and the worked example above — run at `xhigh`, the default, on GPT-5.6 Sol — took 8m02s
 for a one-file change. Use it for work where being right matters more than
 being fast; use plain Claude Code for the rest. It's `disable-model-invocation: true`
 precisely so nothing routes through it unless you ask.
