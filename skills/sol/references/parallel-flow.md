@@ -66,7 +66,17 @@ true`) — you are re-invoked when it exits, with nothing to poll:
 bash <skill-dir>/scripts/sol-parallel.sh --workers N "$SCRATCHPAD/sol-run"
 ```
 
-This creates one git worktree and branch (`sol/<slug>`) per brief under
+Then start a Monitor on the watcher, so the batch is visible while it works:
+
+```bash
+python3 <skill-dir>/scripts/sol-watch.py --run "$SCRATCHPAD/sol-run"
+```
+
+It prints milestone lines for every worker, each prefixed with its slug, and one
+`run:` line per worker when the launcher is done. The lines are progress for the user;
+act on the launcher's exit, not on them. Do the same after `--resume` in step 9.
+
+The launch creates one git worktree and branch (`sol/<slug>`) per brief under
 `../.sol-worktrees/<repo-name>/<slug>` (a sibling of the repo, not inside it), runs
 `SOL_WORKTREE_SETUP` in each fresh worktree if set, launches one `codex exec` per
 worker, and **blocks until every worker finishes or is force-killed** by the

@@ -4,10 +4,19 @@
 One line per milestone on stdout, line-buffered, so a harness Monitor (or a
 human with a terminal) can watch a long /sol run without reading raw JSON.
 
-    python3 sol-watch.py "$SCRATCHPAD/sol-events.jsonl"
+    python3 sol-watch.py --run <run-dir>          # a whole launcher run, live
+    python3 sol-watch.py <events.jsonl>           # one event log, live
+    python3 sol-watch.py <events.jsonl> --once    # one event log, after the fact
 
-Follows the file like `tail -F`: it is fine to start this before codex has
-created it. Exits 0 when the turn completes, 1 when it fails.
+`--run` is the one to hand a Monitor. It follows every worker of a
+sol-parallel.sh run directory, survives the launcher replacing a worker's log
+(a stall relaunch, a `--resume`), and exits once the launcher has written
+`summary.json` -- with one closing line per worker and exit 0 only if every
+worker ended `ok` or `no-changes`. Without it a backgrounded run is a single
+opaque shell command with nothing to look at until it ends.
+
+The single-file form follows the file like `tail -F`: it is fine to start it
+before codex has created it. Exits 0 when the turn completes, 1 when it fails.
 
 Design notes:
 
@@ -41,6 +50,10 @@ import time
 
 POLL_INTERVAL = 0.4
 STALE_AFTER = 300.0  # seconds of no events before reporting a stall
+# --run: how long "no launcher and no worker alive" must hold before the run is
+# taken to be over. Covers the instant between a Monitor starting and the
+# launcher it was started alongside claiming the run directory.
+IDLE_GRACE = 5.0
 
 # Commands whose result is worth interrupting for: tests, linters, typecheckers,
 # builds. Matched against the whole command string, so it catches
@@ -137,9 +150,12 @@ def extract_paths(item: dict) -> list[str]:
 
 
 class Watcher:
-    def __init__(self, emit=print) -> None:
+    def __init__(self, emit=print, elapsed=None) -> None:
         self.emit_line = emit
         self.started = time.monotonic()
+        # Optional clock for the stamp. --run passes the worker's own age, so a
+        # watcher attached late still stamps lines on the run's clock, not its own.
+        self.elapsed = elapsed
         self.steps = 0
         self.files: list[str] = []
         self.said_plan = False
@@ -150,7 +166,8 @@ class Watcher:
 
     # -- output -----------------------------------------------------------
     def emit(self, kind: str, message: str) -> None:
-        stamp = human_duration(time.monotonic() - self.started)
+        stamp = human_duration(
+            self.elapsed() if self.elapsed else time.monotonic() - self.started)
         self.emit_line(f"[{stamp}] step {self.steps:<3d}· {kind}: {message}", flush=True)
 
     # -- event handling ---------------------------------------------------
@@ -208,8 +225,13 @@ class Watcher:
             return
 
         if item_type == "agent_message" and not self.said_plan:
-            self.said_plan = True
             text = item.get("text") or ""
+            # With the report schema on, the final message is a JSON object. A
+            # worker that says nothing before it would otherwise have that
+            # report printed, truncated, as its "plan".
+            if text.lstrip().startswith("{"):
+                return
+            self.said_plan = True
             if text.strip():
                 self.emit("plan", shorten(text))
             return
@@ -224,10 +246,19 @@ class Watcher:
             self.emit("changed", shorten(command, 90))
             return
 
-        if VERIFY_RE.search(command) or (
-            TEST_HINT_RE.search(command) and not ROUTINE_RE.match(command)
+        # Classify on the first line only. A heredoc body is data, not the
+        # command: `cat > notes.py <<EOF` followed by text mentioning "black" or
+        # "tests" was being announced as a verification run.
+        head = command.split("\n", 1)[0]
+        if VERIFY_RE.search(head) or (
+            TEST_HINT_RE.search(head) and not ROUTINE_RE.match(head)
         ):
             self.emit("ran", f"{shorten(command, 80)} -> exit {exit_code}")
+            return
+
+        # A search that exits 1 found nothing. That is an answer, not a failure,
+        # and it happens dozens of times a run.
+        if exit_code == 1 and re.match(r"^(?:rg|grep)\b", head):
             return
 
         if isinstance(exit_code, int) and exit_code != 0:
@@ -327,15 +358,228 @@ def replay(path: str, watcher: Watcher) -> int:
     return watcher.exit_code
 
 
+def pid_alive(pid: object) -> bool:
+    try:
+        os.kill(int(str(pid).strip()), 0)
+    except PermissionError:
+        return True          # exists, just not ours
+    except (OSError, ValueError):
+        return False
+    return True
+
+
+def read_text(path: str) -> str:
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as handle:
+            return handle.read()
+    except OSError:
+        return ""
+
+
+class Tail:
+    """One worker's event log inside a run directory.
+
+    The launcher replaces this file under a running watcher: a stall relaunch
+    moves it aside and starts a new one, a `--resume` truncates it. Both are
+    detected (new inode, or shorter than what was already read) and treated as
+    a fresh attempt rather than as the end of the story.
+    """
+
+    def __init__(self, run_dir: str, slug: str, emit) -> None:
+        self.dir = os.path.join(run_dir, "workers", slug)
+        self.path = os.path.join(self.dir, "events.jsonl")
+        self.slug = slug
+        self.emit_line = emit
+        self.prefix = ""
+        self.handle = None
+        self.inode = None
+        self.pos = 0
+        self.buffer = b""
+        self.attempts = 0
+        self.watcher = self.new_watcher()
+
+    def age(self) -> float:
+        """Seconds since the launcher started this attempt."""
+        try:
+            return max(0.0, time.time() - float(read_text(os.path.join(self.dir, "started-at"))))
+        except ValueError:
+            return 0.0
+
+    def new_watcher(self) -> Watcher:
+        return Watcher(emit=lambda line, **kw: self.emit_line(self.prefix + line, **kw),
+                       elapsed=self.age)
+
+    def close(self) -> None:
+        if self.handle is not None:
+            self.handle.close()
+            self.handle = None
+
+    def drain(self) -> None:
+        chunk = self.handle.read() if self.handle is not None else b""
+        if not chunk:
+            return
+        self.pos += len(chunk)
+        self.buffer += chunk
+        *lines, self.buffer = self.buffer.split(b"\n")
+        for raw in lines:
+            line = raw.decode("utf-8", errors="replace").strip()
+            if not line.startswith("{"):
+                continue
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(event, dict):
+                self.watcher.handle(event)
+
+    def poll(self) -> None:
+        try:
+            st = os.stat(self.path)
+        except OSError:
+            return           # not created yet, or mid-replacement
+        if self.handle is None or st.st_ino != self.inode or st.st_size < self.pos:
+            if self.handle is not None:
+                self.drain()                      # whatever the old log still held
+                self.close()
+                self.watcher = self.new_watcher()
+                effort = read_text(os.path.join(self.dir, "effort")).strip()
+                self.watcher.emit(
+                    "relaunch",
+                    f"new attempt {self.attempts + 1}" + (f" at effort {effort}" if effort else ""),
+                )
+            try:
+                self.handle = open(self.path, "rb")
+            except OSError:
+                self.handle = None
+                return
+            self.inode, self.pos, self.buffer = st.st_ino, 0, b""
+            self.attempts += 1
+        self.drain()
+
+
+def run_slugs(run_dir: str) -> list[str]:
+    """Workers of the run, in task order when the launcher's roster exists."""
+    slugs = [s for s in read_text(os.path.join(run_dir, "roster")).split("\n") if s]
+    if slugs:
+        return slugs
+    try:
+        return sorted(
+            d for d in os.listdir(os.path.join(run_dir, "workers"))
+            if os.path.isdir(os.path.join(run_dir, "workers", d))
+        )
+    except OSError:
+        return []
+
+
+def run_active(run_dir: str) -> bool:
+    """Is anything still alive: the supervising launcher, or any worker it started?"""
+    if pid_alive(read_text(os.path.join(run_dir, "supervisor"))):
+        return True
+    for row in read_text(os.path.join(run_dir, "pids")).split("\n"):
+        parts = row.split("\t")
+        if len(parts) == 2 and pid_alive(parts[1]):
+            return True
+    return False
+
+
+def conclude(run_dir: str, emit) -> int:
+    """The closing lines, from the launcher's own verdict rather than ours."""
+    summary_path = os.path.join(run_dir, "summary.json")
+    try:
+        summary_mtime = os.stat(summary_path).st_mtime
+        with open(summary_path, "r", encoding="utf-8") as handle:
+            workers = json.load(handle).get("workers") or []
+    except (OSError, ValueError, AttributeError):
+        emit(
+            "run: the launcher is not running and wrote no summary.json — it most "
+            "likely refused to start; read the launcher's own output",
+            flush=True,
+        )
+        return 1
+    try:
+        batch_mtime = os.stat(os.path.join(run_dir, "pids")).st_mtime
+    except OSError:
+        batch_mtime = 0.0
+    if summary_mtime < batch_mtime:
+        # summary.json is from an earlier batch: this one was launched after it
+        # and nothing has classified it since. The launcher was killed, and its
+        # workers finished with nobody watching.
+        emit(
+            "run: the launcher is gone and no worker is running, but this batch was "
+            f"never classified — run `sol-parallel.sh --wait {run_dir}`",
+            flush=True,
+        )
+        return 1
+    code = 0
+    for w in workers:
+        status = w.get("status") or "unknown"
+        if status not in ("ok", "no-changes"):
+            code = 1
+        bits = [status]
+        if w.get("report_status"):
+            bits.append(f"report {w['report_status']}")
+        files = w.get("files_changed") or []
+        if files:
+            bits.append(f"{len(files)} file{'s' if len(files) != 1 else ''}")
+        if w.get("stall_retries"):
+            bits.append(f"{w['stall_retries']} stall retr{'ies' if w['stall_retries'] != 1 else 'y'}")
+        if w.get("elapsed_seconds"):
+            bits.append(human_duration(w["elapsed_seconds"]))
+        line = f"run: {w.get('slug', '?')} — " + " · ".join(bits)
+        if w.get("error"):
+            line += f" — {shorten(w['error'], 90)}"
+        emit(line, flush=True)
+    return code
+
+
+def follow_run(run_dir: str, emit=print) -> int:
+    """Follow every worker of a launcher run until the launcher is done with it."""
+    tails: dict[str, Tail] = {}
+    idle_since = None
+    try:
+        while True:
+            slugs = run_slugs(run_dir)
+            for slug in slugs:
+                if slug not in tails:
+                    tails[slug] = Tail(run_dir, slug, emit)
+            for tail in tails.values():
+                # Name the worker only when there is more than one to tell apart.
+                tail.prefix = f"{tail.slug} " if len(tails) > 1 else ""
+                tail.poll()
+
+            if run_active(run_dir):
+                idle_since = None
+            else:
+                now = time.monotonic()
+                if idle_since is None:
+                    idle_since = now
+                if now - idle_since >= IDLE_GRACE:
+                    for tail in tails.values():
+                        tail.poll()               # anything written at the very end
+                    return conclude(run_dir, emit)
+            time.sleep(POLL_INTERVAL)
+    except KeyboardInterrupt:
+        return 130
+    finally:
+        for tail in tails.values():
+            tail.close()
+
+
 def main(argv: list[str]) -> int:
     args = [a for a in argv[1:] if not a.startswith("-")]
     once = "--once" in argv[1:]
+    run = "--run" in argv[1:]
     if not args:
         print(__doc__.strip().split("\n\n")[0], file=sys.stderr)
-        print("usage: sol-watch.py <events.jsonl> [--once]", file=sys.stderr)
+        print("usage: sol-watch.py --run <run-dir> | <events.jsonl> [--once]", file=sys.stderr)
         return 2
 
     path = args[0]
+    if run:
+        if not os.path.isdir(path):
+            print(f"sol-watch: not a run directory: {path}", file=sys.stderr)
+            return 2
+        return follow_run(path)
     watcher = Watcher()
     if once:
         return replay(path, watcher)

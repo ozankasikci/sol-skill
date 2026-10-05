@@ -1,11 +1,11 @@
 ---
 name: sol
-version: "1.11.0"
+version: "1.11.1"
 description: Delegate implementation (or, when explicitly requested, research) to GPT-6.1 Sol (high reasoning; xhigh on request) via Codex CLI. Claude plans, orchestrates, and reviews; Sol writes the code.
 argument-hint: "[implementation task]"
 disable-model-invocation: true
 user-invocable: true
-allowed-tools: Bash, Read, Write, Grep, Glob
+allowed-tools: Bash, Read, Write, Grep, Glob, Monitor
 homepage: https://github.com/ozankasikci/sol-skill
 repository: https://github.com/ozankasikci/sol-skill
 author: ozankasikci
@@ -68,6 +68,14 @@ bash <skill-dir>/scripts/sol-parallel.sh --workers 1 --in-place "$SCRATCHPAD/sol
 bash <skill-dir>/scripts/sol-parallel.sh --wait "$SCRATCHPAD/sol-run"
 ```
 
+**Then attach the watcher, so the run is visible while it works.** A backgrounded launcher is one opaque shell command: nothing shows what Sol is doing until it ends. Straight after launching, start a Monitor on:
+
+```bash
+python3 <skill-dir>/scripts/sol-watch.py --run "$SCRATCHPAD/sol-run"
+```
+
+It follows every worker's event log and prints a handful of milestone lines — the opening plan, each test or build command with its exit code, real errors, a stall relaunch — then one `run:` line per worker once the launcher has written `summary.json`, and exits (0 only if every worker ended `ok` or `no-changes`). Start one for every launch, `--resume` and `--research` included. Its lines are progress for the user, not prompts for you: do not act on them, and do not narrate them back one by one. Act when the launcher itself exits. If there is no Monitor tool, skip this — the run does not depend on it.
+
 `--wait` blocks, and takes over the watchdog and the stall retry from the launcher that was killed. It returns 75 after `SOL_WAIT_TIMEOUT` (540s) if the worker is still running — call it again. 0 or 1 means the run is over.
 
 `--in-place` runs in your working tree and leaves the changes there uncommitted, exactly as a bare `codex exec` would — but it also supervises the run. **Use it for every single-worker run.** A hung codex sits alive and silent forever, and the launcher is what notices: it kills the worker after `SOL_FIRST_EVENT_TIMEOUT` with nothing in its log, relaunches once at lower effort, records a real status in `summary.json`, and returns an exit code you can act on. Watching for that by hand is the one job that has actually been lost in practice — a run hung at `xhigh` with two lines in its event log and burned hours before anyone looked.
@@ -99,7 +107,7 @@ codex exec --json -m "${SOL_MODEL:-gpt-6.1-sol}" -c model_reasoning_effort=high 
 (`--json` writes a JSONL event log; keep stderr in its own file — `2>&1` would corrupt the log.) This form has **no watchdog, no retry, no `summary.json` and no patch file**: stall-watching is yours to do, per the note below, and `git diff` will not show you files Sol created. There is rarely a reason to prefer it.
 </details>
 
-If the user asks what happened during a run, summarize the event log with `python3 <skill-dir>/scripts/sol-watch.py <run-dir>/workers/<slug>/events.jsonl --once` instead of reading the raw JSONL.
+If the user asks afterwards what happened during a run, summarize the event log with `python3 <skill-dir>/scripts/sol-watch.py <run-dir>/workers/<slug>/events.jsonl --once` instead of reading the raw JSONL.
 
 Structure the brief as compact XML blocks (GPT-6.1 Sol responds better to explicit contracts than to prose; tighten the contract before ever raising effort). See `references/brief-template.md` for a fill-in template.
 
@@ -157,7 +165,7 @@ If `summary.json` shows a `commit` for an in-place run, Sol committed against th
 
 ## 4. Corrections (max 2 rounds)
 
-For blocking issues, write the correction to `<run-dir>/workers/<slug>/correction.md` and resume through the launcher, backgrounded the same way as the launch:
+For blocking issues, write the correction to `<run-dir>/workers/<slug>/correction.md` and resume through the launcher, backgrounded and watched the same way as the launch:
 
 ```bash
 bash <skill-dir>/scripts/sol-parallel.sh --resume "$SCRATCHPAD/sol-run"
@@ -184,7 +192,7 @@ The final message must let the user judge the change without re-deriving it. "11
 
 ## Research mode (only when the user explicitly names Sol as researcher)
 
-Write the research brief to `<run-dir>/tasks/01-<slug>.md` — a separate run directory from any implementation run — then launch through the same script, backgrounded the same way:
+Write the research brief to `<run-dir>/tasks/01-<slug>.md` — a separate run directory from any implementation run — then launch through the same script, backgrounded and watched the same way:
 
 ```bash
 bash <skill-dir>/scripts/sol-parallel.sh --workers 1 --research "$SCRATCHPAD/sol-research"

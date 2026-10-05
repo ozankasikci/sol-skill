@@ -100,6 +100,147 @@ import os as _os
 check(sol_watch.relativize(_os.getcwd() + "/src/a.py") == "src/a.py", "relativize strips cwd")
 check(sol_watch.relativize("/somewhere/else/a.py") == "/somewhere/else/a.py", "relativize keeps foreign paths")
 
+import json, os, tempfile, threading, time
+
+
+def collect(events: list[dict]) -> list[str]:
+    lines: list[str] = []
+    watcher = sol_watch.Watcher(emit=lambda line, **kw: lines.append(line))
+    for event in events:
+        watcher.handle(event)
+    return lines
+
+
+def cmd(command: str, exit_code: int) -> dict:
+    return {"type": "item.completed",
+            "item": {"type": "command_execution", "command": command, "exit_code": exit_code}}
+
+
+print("classification: what a Monitor should not be woken for")
+out = "\n".join(collect([cmd("/bin/zsh -lc 'rg -n lockout src/'", 1)]))
+check(out == "", f"a routine read that finds nothing is not a failure line (got {out!r})")
+out = "\n".join(collect([cmd("cat > notes.py <<'PY'\nrun black and the tests later\nPY", 0)]))
+check(out == "", f"a heredoc body mentioning a test runner is not a verification run (got {out!r})")
+out = "\n".join(collect([cmd("python3 build.py", 3)]))
+check("failed" in out and "exit 3" in out, "a real command that fails is still reported")
+out = "\n".join(collect([{"type": "item.completed",
+                          "item": {"type": "agent_message", "text": '{"status": "done"}'}}]))
+check(out == "", "a JSON final report is not announced as the plan")
+
+print("--run: follows a launcher run directory")
+sol_watch.POLL_INTERVAL = 0.02
+sol_watch.IDLE_GRACE = 0.2
+
+
+def make_run(root: pathlib.Path, *slugs: str) -> pathlib.Path:
+    run_dir = root / "run"
+    for slug in slugs:
+        (run_dir / "workers" / slug).mkdir(parents=True)
+        (run_dir / "workers" / slug / "started-at").write_text(f"{int(time.time())}\n")
+    (run_dir / "roster").write_text("".join(f"{s}\n" for s in slugs))
+    return run_dir
+
+
+def start(run_dir: pathlib.Path):
+    lines: list[str] = []
+    result: dict = {}
+    thread = threading.Thread(
+        target=lambda: result.update(code=sol_watch.follow_run(
+            str(run_dir), emit=lambda line, **kw: lines.append(line))),
+        daemon=True)
+    thread.start()
+    return lines, result, thread
+
+
+def wait_for(predicate, timeout: float = 5.0) -> bool:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.02)
+    return False
+
+
+def write_summary(run_dir: pathlib.Path, **status: str) -> None:
+    (run_dir / "summary.json").write_text(json.dumps({"workers": [
+        {"slug": slug, "status": st, "report_status": "done" if st == "ok" else "",
+         "files_changed": ["a.py"] if st == "ok" else [], "stall_retries": 0,
+         "elapsed_seconds": 75, "error": "" if st == "ok" else "quota exceeded"}
+        for slug, st in status.items()]}))
+
+
+with tempfile.TemporaryDirectory() as tmp:
+    run_dir = make_run(pathlib.Path(tmp), "solo")
+    log = run_dir / "workers" / "solo" / "events.jsonl"
+    # This process stands in for the supervising launcher: alive for now.
+    (run_dir / "supervisor").write_text(f"{os.getpid()}\n")
+    (run_dir / "pids").write_text("solo\t999999\n")
+    lines, result, thread = start(run_dir)
+
+    log.write_text(json.dumps({"type": "thread.started", "thread_id": "t-1"}) + "\n"
+                   + json.dumps(cmd("pytest tests/", 1)) + "\n")
+    check(wait_for(lambda: any("pytest tests/" in l for l in lines)),
+          "milestones stream while the launcher is alive")
+    check(thread.is_alive(), "a finished turn alone does not end the watch")
+
+    # A stall relaunch: the launcher moves the log aside and starts a new one.
+    (run_dir / "workers" / "solo" / "effort").write_text("medium\n")
+    log.rename(log.with_name("events-attempt-1.jsonl"))
+    log.write_text(json.dumps({"type": "thread.started", "thread_id": "t-2"}) + "\n"
+                   + json.dumps(cmd("pytest tests/", 0)) + "\n")
+    check(wait_for(lambda: any("relaunch" in l and "medium" in l for l in lines)),
+          "a replaced log is announced as a relaunch at the new effort")
+    check(wait_for(lambda: any("t-2" in l for l in lines))
+          and wait_for(lambda: sum("pytest tests/" in l for l in lines) == 2),
+          "and the new attempt is followed from its first line")
+    check(all(not l.startswith("solo ") for l in lines),
+          "a single worker's lines carry no slug prefix")
+
+    # The launcher finishes: summary written, supervisor marker removed.
+    write_summary(run_dir, solo="ok")
+    (run_dir / "supervisor").unlink()
+    thread.join(timeout=5)
+    check(not thread.is_alive() and result.get("code") == 0,
+          f"exits 0 once the launcher is done and every worker is ok (got {result})")
+    check(lines[-1].startswith("run: solo — ok") and "report done" in lines[-1]
+          and "1m15s" in lines[-1],
+          f"closes with the launcher's own verdict (got {lines[-1]!r})")
+
+with tempfile.TemporaryDirectory() as tmp:
+    run_dir = make_run(pathlib.Path(tmp), "api", "ui")
+    for slug in ("api", "ui"):
+        (run_dir / "workers" / slug / "events.jsonl").write_text(
+            json.dumps(cmd(f"pytest {slug}/", 0)) + "\n")
+    (run_dir / "pids").write_text("api\t999998\nui\t999999\n")
+    write_summary(run_dir, api="ok", ui="failed-run")
+    lines, result, thread = start(run_dir)
+    thread.join(timeout=5)
+    check(any(l.startswith("api ") and "pytest api/" in l for l in lines)
+          and any(l.startswith("ui ") and "pytest ui/" in l for l in lines),
+          "with several workers each line names its worker")
+    check(result.get("code") == 1 and any(l.startswith("run: ui — failed-run")
+                                          and "quota exceeded" in l for l in lines),
+          f"a failed worker makes the watch exit 1 and names the reason (got {lines[-2:]!r})")
+
+with tempfile.TemporaryDirectory() as tmp:
+    run_dir = make_run(pathlib.Path(tmp), "orphan")
+    write_summary(run_dir, orphan="ok")                    # from an earlier batch
+    time.sleep(0.05)
+    (run_dir / "pids").write_text("orphan\t999999\n")       # this batch, launched after
+    lines, result, thread = start(run_dir)
+    thread.join(timeout=5)
+    check(result.get("code") == 1 and "--wait" in lines[-1],
+          f"a batch nobody classified is reported, not passed off with a stale summary "
+          f"(got {lines[-1:]!r})")
+
+with tempfile.TemporaryDirectory() as tmp:
+    run_dir = pathlib.Path(tmp) / "run"
+    (run_dir / "tasks").mkdir(parents=True)
+    lines, result, thread = start(run_dir)
+    thread.join(timeout=5)
+    check(result.get("code") == 1 and "refused to start" in lines[-1],
+          "a launcher that never started is said so, instead of watching forever")
+
 print()
 if failures:
     print(f"{len(failures)} check(s) failed:")

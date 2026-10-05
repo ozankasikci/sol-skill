@@ -4,6 +4,30 @@ All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.11.1] — 2026-10-05
+
+### Fixed
+
+- **A running Sol was no longer visible in Claude Code.** 1.11.0 moved the
+  launcher into the background and told Claude there was nothing to poll, so
+  the Monitor it used to attach disappeared and a run became one silent shell
+  command. `SKILL.md` now has Claude start a Monitor on the watcher for every
+  launch, `--resume` and `--research`.
+
+### Added
+
+- **`sol-watch.py --run <run-dir>`** follows a whole launcher run: every
+  worker's event log, through a stall relaunch or a `--resume` replacing the
+  log, until the launcher has written `summary.json`. It closes with one `run:`
+  line per worker and exits 0 only if all ended `ok` or `no-changes`. A batch
+  whose launcher died unclassified, or never started, is reported as such.
+
+### Changed
+
+- **The watcher is quieter.** A search that finds nothing (`rg`/`grep` exit 1) is
+  no longer a `failed` line, a heredoc body that mentions a test runner is no
+  longer a verification run, and a JSON final report is not printed as the plan.
+
 ## [1.11.0] — 2026-10-05
 
 Every run now goes through the supervised launcher, and the brief and the report
@@ -468,6 +492,7 @@ First public release.
   test/lint/typecheck commands itself — none of which are `codex exec` calls, so all
   of them were blocked.
 
+[1.11.1]: https://github.com/ozankasikci/sol-skill/releases/tag/v1.11.1
 [1.11.0]: https://github.com/ozankasikci/sol-skill/releases/tag/v1.11.0
 [1.10.0]: https://github.com/ozankasikci/sol-skill/releases/tag/v1.10.0
 [1.9.0]: https://github.com/ozankasikci/sol-skill/releases/tag/v1.9.0

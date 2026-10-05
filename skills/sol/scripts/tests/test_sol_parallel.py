@@ -2395,6 +2395,38 @@ with tempfile.TemporaryDirectory() as tmp:
     check("-m gpt-9-sol " in arglog.read_text(),
           f"--resume keeps the model the run was launched with (args: {arglog.read_text()!r})")
 
+print("sol-watch --run follows a real launcher run, through a stall relaunch, to its verdict")
+with tempfile.TemporaryDirectory() as tmp:
+    import sys, time
+    root = pathlib.Path(tmp)
+    bin_dir = root / "bin"
+    install_fake_codex(bin_dir)
+    repo = make_repo(root / "repo")
+    run_dir = root / "run"
+    write_tasks(run_dir, "watched")
+    env = clean_env(bin_dir, FAKE_STALL_EFFORTS="high",
+                    SOL_FIRST_EVENT_TIMEOUT="3", SOL_STALL_RETRIES="1")
+    launcher = subprocess.Popen(
+        ["bash", str(SCRIPT), "--workers", "1", "--in-place", str(run_dir)],
+        cwd=repo, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env)
+    try:
+        # Started the way the skill starts it: straight after the launch, with
+        # no wait for the launcher to have created anything yet.
+        w = subprocess.run([sys.executable, str(HERE.parent / "sol-watch.py"),
+                            "--run", str(run_dir)],
+                           capture_output=True, text=True, check=False, timeout=60)
+        launcher.wait(timeout=30)
+        check(launcher.returncode == 0, "sanity: the launcher recovered and exited 0")
+        check(w.returncode == 0, f"the watcher exits 0 with the run (got {w.returncode})")
+        check("relaunch" in w.stdout and "effort medium" in w.stdout,
+              f"it reports the stall relaunch (stdout: {w.stdout!r})")
+        last = w.stdout.strip().splitlines()[-1] if w.stdout.strip() else ""
+        check(last.startswith("run: watched — ok") and "1 stall retry" in last,
+              f"it closes with the launcher's verdict (got {last!r})")
+    except subprocess.TimeoutExpired:
+        launcher.kill()
+        check(False, "sol-watch --run never returned for a run that finished")
+
 print()
 if failures:
     print(f"{len(failures)} check(s) failed:")

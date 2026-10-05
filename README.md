@@ -82,6 +82,8 @@ Five phases, and the interesting part is what each one refuses to do.
 bash skills/sol/scripts/sol-parallel.sh --workers 1 --in-place "$SCRATCHPAD/sol-run"
 ```
 
+Alongside it Claude attaches `sol-watch.py --run` as a Monitor, so the run shows live milestones — plan, test commands with their exit codes, errors, a stall relaunch — instead of sitting as one silent background command.
+
 Under it is a plain `codex exec --json -m gpt-6.1-sol -c model_reasoning_effort=high -s workspace-write`, with the brief piped in on stdin so shell quoting cannot damage code snippets. What the launcher adds is everything a bare call lacks: a watchdog that kills a worker gone silent and relaunches it once at lower effort, and a single `summary.json` holding the outcome.
 
 The brief is compact XML blocks, not prose: `<task>`, `<environment>`, `<acceptance_criteria>`, `<non_goals>`, `<verification_loop>`, `<action_safety>`, `<when_blocked>`, `<output_contract>`. GPT-6.1 Sol follows explicit contracts far better than it follows paragraphs, and **the rule is to tighten the contract before ever raising the effort level.** Template in [`skills/sol/references/brief-template.md`](skills/sol/references/brief-template.md).
