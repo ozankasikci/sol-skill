@@ -1,0 +1,72 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "status",
+    "summary",
+    "criteria",
+    "commands",
+    "files_changed",
+    "deviations",
+    "blocked_checks",
+    "open_questions"
+  ],
+  "properties": {
+    "status": {
+      "type": "string",
+      "enum": ["done", "partial", "blocked"],
+      "description": "done: every acceptance criterion is met and verified. partial: some work landed but at least one criterion is unmet. blocked: you stopped because you could not proceed without a decision or access you do not have."
+    },
+    "summary": {
+      "type": "string",
+      "description": "Two or three sentences on what you changed and why."
+    },
+    "criteria": {
+      "type": "array",
+      "description": "One entry per acceptance criterion in the brief, by its id.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "met", "evidence"],
+        "properties": {
+          "id": { "type": "string", "description": "The criterion's id from the brief, e.g. AC1." },
+          "met": { "type": "boolean" },
+          "evidence": { "type": "string", "description": "The command you ran and what it showed, or why this is unmet or unverified." }
+        }
+      }
+    },
+    "commands": {
+      "type": "array",
+      "description": "Every verification command you actually ran. Do not list a command you did not run.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["command", "exit_code", "result"],
+        "properties": {
+          "command": { "type": "string" },
+          "exit_code": { "type": "integer" },
+          "result": { "type": "string", "description": "One line: pass/fail counts or the first error." }
+        }
+      }
+    },
+    "files_changed": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "deviations": {
+      "type": "array",
+      "description": "Anything you did that the brief did not ask for, or did differently from the plan, and why. Empty if none.",
+      "items": { "type": "string" }
+    },
+    "blocked_checks": {
+      "type": "array",
+      "description": "Checks you could not run (sandbox, network, missing toolchain) and the exact error. Empty if none.",
+      "items": { "type": "string" }
+    },
+    "open_questions": {
+      "type": "array",
+      "description": "Decisions you need from the reviewer. Required when status is blocked. Empty if none.",
+      "items": { "type": "string" }
+    }
+  }
+}

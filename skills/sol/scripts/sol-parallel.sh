@@ -7,7 +7,10 @@
 #   sol-parallel.sh --dry-run   <run-dir>       create and bootstrap worktrees, then
 #                                                stop before launching any Codex session
 #                                                — inspect the setup before spending runs
-#   sol-parallel.sh --wait      <run-dir>       re-attach to a running batch
+#   sol-parallel.sh --wait      <run-dir>       re-attach to a running batch and
+#                                                supervise it: blocks, and takes over
+#                                                the watchdog and stall retries if
+#                                                the launching call is gone
 #   sol-parallel.sh --resume    <run-dir>       send correction briefs
 #   sol-parallel.sh --cleanup   <run-dir>       remove merged worktrees/branches
 #
@@ -16,6 +19,11 @@
 # leaves them -- but with the inactivity watchdog and stall retries that a bare
 # `codex exec` has no way to get.
 #
+# --research runs a single read-only brief with live web search: no worktree,
+# no commit, no clean-tree requirement, the prose answer in report.md. It exists
+# so a research run gets the same watchdog and stall retries as an
+# implementation run instead of a bare, unsupervised `codex exec`.
+#
 # A brief may name reference images in a sidecar next to it:
 #   <run-dir>/tasks/01-<slug>.images   one path per line, '#' comments ignored
 # Each is passed to that worker as `codex exec -i`. Missing paths fail the run
@@ -23,7 +31,13 @@
 #
 # Exit: 0 all ok · 1 a worker failed · 2 precondition/usage · 75 still running
 #
-# Env: SOL_MAX_WORKERS (default 3)   ceiling on --workers
+# Env: SOL_MODEL                     model passed as `-m`. Unset: the Codex
+#                                    config's own default model when that is a
+#                                    Sol model, else the pinned fallback below.
+#                                    Resolved once at launch and recorded in the
+#                                    run directory, so a relaunch or a resume
+#                                    never switches model mid-run.
+#      SOL_MAX_WORKERS (default 3)   ceiling on --workers
 #      SOL_WORKTREE_SETUP            command run in each fresh worktree
 #      SOL_WORKER_TIMEOUT (0)        absolute per-worker wall-clock cap, seconds.
 #                                    0 = none, the default: a whole task's
@@ -55,6 +69,18 @@
 #                                    exemption that lets long builds run silent.
 #      SOL_STALL_RETRIES (1)         automatic relaunches of a stalled worker,
 #                                    each one reasoning-effort step lower
+#      SOL_RESEARCH_EFFORT (xhigh)   reasoning effort for --research. Separate
+#                                    from SOL_EFFORT: research has no compiler
+#                                    or test suite, so the reasoning is the only
+#                                    check and lowering SOL_EFFORT for
+#                                    implementation must not lower it here.
+#      SOL_WAIT_TIMEOUT (540)        seconds --wait may block before returning
+#                                    75 with workers still live. 0 = until done.
+#      SOL_REPORT_SCHEMA             JSON Schema for a worker's final message,
+#                                    passed as --output-schema. Defaults to the
+#                                    bundled references/report-schema.json; set
+#                                    it empty for a free-text report. Never
+#                                    applied to --research.
 #      SOL_SANDBOX (workspace-write) sandbox policy passed as `-s`. Set to
 #                                    danger-full-access for a toolchain the
 #                                    sandbox cannot reach at all — Docker, whose
@@ -79,8 +105,11 @@
 
 set -uo pipefail
 
-MODEL="${SOL_MODEL:-gpt-6.1-sol}"
+# The pinned fallback. See resolve_model for when it is used.
+DEFAULT_MODEL="gpt-6.1-sol"
 EFFORT="${SOL_EFFORT:-high}"
+RESEARCH_EFFORT="${SOL_RESEARCH_EFFORT:-xhigh}"
+WAIT_TIMEOUT="${SOL_WAIT_TIMEOUT:-540}"
 WORKER_TIMEOUT="${SOL_WORKER_TIMEOUT:-0}"        # 0 = no absolute cap
 FIRST_EVENT_TIMEOUT="${SOL_FIRST_EVENT_TIMEOUT:-300}"
 IDLE_TIMEOUT="${SOL_IDLE_TIMEOUT:-600}"
@@ -97,10 +126,11 @@ export SOL_CODEX_CONFIG="${SOL_CODEX_CONFIG:-}"
 # config channel is silently ignored, which reads as "the escape hatch does not
 # work" rather than "wrong channel". Exported for the same reason as above.
 export SOL_SANDBOX="${SOL_SANDBOX:-workspace-write}"
-if [ "$SOL_SANDBOX" != "workspace-write" ]; then
-  printf 'sol-parallel: sandbox is %s, not workspace-write — workers can write outside the workspace\n' \
-    "$SOL_SANDBOX" >&2
-fi
+
+# The shape of a worker's final message. `-` rather than `:-`: an explicitly
+# empty SOL_REPORT_SCHEMA means "free text", not "use the default".
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+export SOL_REPORT_SCHEMA="${SOL_REPORT_SCHEMA-$SCRIPT_DIR/../references/report-schema.json}"
 
 die() { printf 'sol-parallel: %s\n' "$1" >&2; exit "${2:-2}"; }
 
@@ -117,6 +147,27 @@ mtime_of() {
   case "$m" in ''|*[!0-9]*) m="$(stat -f %m "$1" 2>/dev/null)" ;; esac
   case "$m" in ''|*[!0-9]*) m=0 ;; esac
   printf '%s' "$m"
+}
+
+# Which model to launch. An explicit SOL_MODEL always wins. Otherwise follow the
+# Codex config's own default -- so a new Sol model the user has already switched
+# Codex to is picked up without waiting for a release of this skill -- but only
+# when that default IS a Sol model: a config pointed at some other family must
+# not silently turn /sol into something else. sed, not awk: the test suite
+# shims awk to hold a race window open.
+resolve_model() {
+  if [ -n "${SOL_MODEL:-}" ]; then printf '%s' "$SOL_MODEL"; return; fi
+  local cfg="${CODEX_HOME:-$HOME/.codex}/config.toml" m=""
+  if [ -f "$cfg" ]; then
+    # Top-level keys only: stop at the first [section].
+    m="$(sed -n -e '/^[[:space:]]*\[/q' \
+      -e 's/^[[:space:]]*model[[:space:]]*=[[:space:]]*["'"'"']\{0,1\}\([^"'"'"'#[:space:]]*\).*/\1/p' \
+      "$cfg" 2>/dev/null | head -1)"
+  fi
+  case "$m" in
+    *-sol|*-sol-*) printf '%s' "$m" ;;
+    *)             printf '%s' "$DEFAULT_MODEL" ;;
+  esac
 }
 
 # One reasoning-effort step down. Stalls are empirically effort-correlated
@@ -177,16 +228,18 @@ WORKERS=""
 RUN_DIR=""
 DRY_RUN=0
 IN_PLACE=0
+RESEARCH=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --workers) [ $# -ge 2 ] || die "--workers requires a value"
                WORKERS="$2"; shift 2 ;;
     --dry-run) DRY_RUN=1; shift ;;
     --in-place) IN_PLACE=1; shift ;;
+    --research) RESEARCH=1; shift ;;
     --wait)    MODE="wait";    shift ;;
     --resume)  MODE="resume";  shift ;;
     --cleanup) MODE="cleanup"; shift ;;
-    -h|--help) sed -n '2,17p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,25p' "$0"; exit 0 ;;
     -*)        die "unknown option: $1" ;;
     *)         RUN_DIR="$1"; shift ;;
   esac
@@ -210,6 +263,47 @@ OUT_DIR="$RUN_DIR/workers"
 # created. The marker means `--wait`, `--resume` and `--cleanup` behave without
 # the caller retyping the flag -- which nothing in the output ever prompted for.
 [ -f "$RUN_DIR/in-place" ] && IN_PLACE=1
+
+# Research is a property of the run for the same reason, and it is in-place by
+# construction: read-only, so there is nothing to isolate and nothing to commit.
+# Its settings are applied here, on every invocation, so the stall relaunch and
+# a follow-up --resume inherit them without the caller retyping anything.
+[ -f "$RUN_DIR/research" ] && RESEARCH=1
+if [ "$RESEARCH" -eq 1 ]; then
+  IN_PLACE=1
+  EFFORT="$RESEARCH_EFFORT"
+  # Mandatory, not a default: live web content is a prompt-injection surface,
+  # and a research worker has no business writing anywhere.
+  SOL_SANDBOX="read-only"
+  SOL_CODEX_CONFIG="${SOL_CODEX_CONFIG:+$SOL_CODEX_CONFIG }web_search=\"live\""
+  # The answer is prose with citations, not an implementation report.
+  SOL_REPORT_SCHEMA=""
+elif [ "$SOL_SANDBOX" != "workspace-write" ]; then
+  printf 'sol-parallel: sandbox is %s, not workspace-write — workers can write outside the workspace\n' \
+    "$SOL_SANDBOX" >&2
+fi
+
+# Recorded beats recomputed, again: a --wait or --resume from a shell with a
+# different SOL_MODEL, or after the Codex config changed, must not move a
+# running batch onto another model.
+MODEL="$(cat "$RUN_DIR/model" 2>/dev/null)"
+[ -n "$MODEL" ] || MODEL="$(resolve_model)"
+
+# Exactly one invocation supervises a batch at a time. The launching call does
+# until it exits or is killed by its caller's timeout; after that a --wait takes
+# over. Without this marker a --wait that arrived while the launcher was still
+# alive would run the stall ladder alongside it and relaunch a worker twice.
+SUPERVISOR="$RUN_DIR/supervisor"
+supervisor_alive() {
+  local p
+  p="$(cat "$SUPERVISOR" 2>/dev/null)"
+  case "$p" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$p" != "$$" ] && kill -0 "$p" 2>/dev/null
+}
+claim_supervisor() {
+  printf '%s\n' "$$" > "$SUPERVISOR"
+  trap '[ "$(cat "$SUPERVISOR" 2>/dev/null)" = "$$" ] && rm -f "$SUPERVISOR"' EXIT
+}
 
 # The recorded workspace of one worker. Recorded beats recomputed for the same
 # reason `brief` is a file rather than a glob (see create_worktrees): the run
@@ -253,13 +347,22 @@ preflight_launch() {
     # No worktree means no isolation: two workers editing one tree corrupt each
     # other. In-place exists to give one ordinary run the watchdog, not to
     # parallelise.
-    [ "$WORKERS" -eq 1 ] || die "--in-place runs in the repo itself and takes exactly one worker"
-    [ "${#briefs[@]}" -eq 1 ] || die "--in-place takes exactly one brief, found ${#briefs[@]}"
+    local what="--in-place"
+    [ "$RESEARCH" -eq 1 ] && what="--research"
+    [ "$WORKERS" -eq 1 ] || die "$what runs in the repo itself and takes exactly one worker"
+    [ "${#briefs[@]}" -eq 1 ] || die "$what takes exactly one brief, found ${#briefs[@]}"
   fi
 
   command -v codex >/dev/null 2>&1 || die "codex not found on PATH"
-  [ -z "$(git status --porcelain)" ] \
-    || die "working tree is dirty; commit or stash so each worker branches from a clean HEAD"
+  # A read-only research run changes nothing, so a dirty tree is no hazard to
+  # it and refusing would only make the user stash work to ask a question.
+  if [ "$RESEARCH" -eq 0 ]; then
+    [ -z "$(git status --porcelain)" ] \
+      || die "working tree is dirty; commit or stash so each worker branches from a clean HEAD"
+  fi
+  if [ -n "$SOL_REPORT_SCHEMA" ] && [ ! -f "$SOL_REPORT_SCHEMA" ]; then
+    die "report schema not found: $SOL_REPORT_SCHEMA (set SOL_REPORT_SCHEMA= for a free-text report)"
+  fi
 
   # Each brief may carry a sidecar naming reference images: `NN-<slug>.images`,
   # one path per line, `#` comments and blanks ignored. Resolved and validated
@@ -319,10 +422,16 @@ create_worktrees() {
   mkdir -p "$OUT_DIR"
   [ "$IN_PLACE" -eq 1 ] || mkdir -p "$WORKTREE_ROOT"
   printf '%s\t%s\n' "$branch" "$sha" > "$RUN_DIR/base"
+  printf '%s\n' "$MODEL" > "$RUN_DIR/model"
   if [ "$IN_PLACE" -eq 1 ]; then
     : > "$RUN_DIR/in-place"
   else
     rm -f "$RUN_DIR/in-place"
+  fi
+  if [ "$RESEARCH" -eq 1 ]; then
+    : > "$RUN_DIR/research"
+  else
+    rm -f "$RUN_DIR/research"
   fi
 
   SLUGS=(); WORKTREES=(); BRIEF_OF=()
@@ -385,32 +494,46 @@ create_worktrees() {
   return "$status"
 }
 
+# The worker command, shared by the first launch and every stall relaunch. It
+# used to be written out twice, and the copies drifted: the relaunch lost the
+# `-i` image arguments, so a visual task that stalled retried blind, with a
+# brief still pointing at attachments that were no longer there.
+# shellcheck disable=SC2016  # expanded by the inner bash, not this one
+WORKER_CMD='
+  img=()
+  if [ -s "$4/images" ]; then
+    while IFS= read -r p; do [ -n "$p" ] && img+=(-i "$p"); done < "$4/images"
+  fi
+  cfg=(); for kv in $SOL_CODEX_CONFIG; do cfg+=(-c "$kv"); done
+  sch=(); [ -n "$SOL_REPORT_SCHEMA" ] && sch=(--output-schema "$SOL_REPORT_SCHEMA")
+  codex exec --json -m "$1" -c model_reasoning_effort="$2" \
+    ${cfg[@]+"${cfg[@]}"} \
+    -s "$SOL_SANDBOX" --color never -C "$3" \
+    ${img[@]+"${img[@]}"} \
+    ${sch[@]+"${sch[@]}"} \
+    -o "$4/report.md" - < "$5" \
+    > "$4/events.jsonl" 2> "$4/stderr.txt"
+  printf "%s\n" "$?" > "$4/exit-code"
+'
+
 launch_workers() {
   local i slug wt brief w pid
   # Job control puts each background job in its own process group, so the
   # timeout backstop can signal the whole group. Without it, killing the
   # wrapper orphans the `codex` process it forked and the backstop is a no-op.
   set -m
+  printf 'launch\n' > "$RUN_DIR/phase"
   : > "$RUN_DIR/pids"
   for i in "${!SLUGS[@]}"; do
     slug="${SLUGS[i]}"; wt="${WORKTREES[i]}"; brief="${BRIEF_OF[i]}"
     w="$OUT_DIR/$slug"
     [ -f "$w/status" ] && continue        # failed-setup: never launched
     date +%s > "$w/started-at"
-    nohup bash -c '
-      img=()
-      if [ -s "$4/images" ]; then
-        while IFS= read -r p; do [ -n "$p" ] && img+=(-i "$p"); done < "$4/images"
-      fi
-      cfg=(); for kv in $SOL_CODEX_CONFIG; do cfg+=(-c "$kv"); done
-      codex exec --json -m "$1" -c model_reasoning_effort="$2" \
-        ${cfg[@]+"${cfg[@]}"} \
-        -s "$SOL_SANDBOX" --color never -C "$3" \
-        ${img[@]+"${img[@]}"} \
-        -o "$4/report.md" - < "$5" \
-        > "$4/events.jsonl" 2> "$4/stderr.txt"
-      printf "%s\n" "$?" > "$4/exit-code"
-    ' _ "$MODEL" "$EFFORT" "$wt" "$w" "$brief" >/dev/null 2>&1 &
+    # The effort this attempt runs at. Written at launch, not only on a stall
+    # downgrade, so the ladder steps down from what was actually used -- which
+    # for --research is not SOL_EFFORT.
+    printf '%s\n' "$EFFORT" > "$w/effort"
+    nohup bash -c "$WORKER_CMD" _ "$MODEL" "$EFFORT" "$wt" "$w" "$brief" >/dev/null 2>&1 &
     pid=$!
     disown "$pid" 2>/dev/null
     printf '%s\t%s\n' "$slug" "$pid" >> "$RUN_DIR/pids"
@@ -425,9 +548,18 @@ launch_workers() {
 # briefs describe an end state, so a partial attempt is a head start, not a
 # hazard. Prior attempt logs are kept as *-attempt-N files.
 #
+# The retry budget is counted per worker, in its own `stall-retries` file, not
+# by a loop counter in the caller: a --wait that takes over supervision from a
+# launcher its caller's timeout killed has no counter to inherit, and must
+# still neither skip a retry that is owed nor grant one that was already spent.
+#
 # Returns 0 if anything was relaunched.
 relaunch_stalled() {
-  local round="$1" slug w wt brief pid n eff relaunched=0 stalled=()
+  local slug w wt brief pid n eff used relaunched=0 stalled=()
+  # Same reason as launch_workers: the relaunch may be issued by a --wait, which
+  # never went through launch_workers, and without job control the watchdog's
+  # group kill only reaches the wrapper and orphans the codex it forked.
+  set -m
   # Scan before touching anything: truncating `pids` on a run with no stalls
   # would erase the just-finished workers' records, which --wait re-attach and
   # the pid-per-worker bookkeeping still depend on.
@@ -436,6 +568,9 @@ relaunch_stalled() {
     w="$OUT_DIR/$slug"
     [ -f "$w/status" ] && continue                       # already classified
     [ "$(cat "$w/exit-code" 2>/dev/null)" = "125" ] || continue
+    used="$(cat "$w/stall-retries" 2>/dev/null)"
+    case "$used" in ''|*[!0-9]*) used=0 ;; esac
+    [ "$used" -lt "$STALL_RETRIES" ] || continue         # budget spent
     stalled+=("$slug")
   done < <(roster)
   [ "${#stalled[@]}" -gt 0 ] || return 1
@@ -461,21 +596,15 @@ relaunch_stalled() {
 
     eff="$(next_effort "$(cat "$w/effort" 2>/dev/null || echo "$EFFORT")")"
     printf '%s\n' "$eff" > "$w/effort"
-    printf '%s\n' "$round" > "$w/stall-retries"
+    used="$(cat "$w/stall-retries" 2>/dev/null)"
+    case "$used" in ''|*[!0-9]*) used=0 ;; esac
+    printf '%s\n' "$((used + 1))" > "$w/stall-retries"
     printf 'sol-parallel: %s: relaunching after stall (attempt %d, effort %s)\n' \
       "$slug" $((n + 1)) "$eff" >&2
 
     rm -f "$w/exit-code"
     date +%s > "$w/started-at"
-    nohup bash -c '
-      cfg=(); for kv in $SOL_CODEX_CONFIG; do cfg+=(-c "$kv"); done
-      codex exec --json -m "$1" -c model_reasoning_effort="$2" \
-        ${cfg[@]+"${cfg[@]}"} \
-        -s "$SOL_SANDBOX" --color never -C "$3" \
-        -o "$4/report.md" - < "$5" \
-        > "$4/events.jsonl" 2> "$4/stderr.txt"
-      printf "%s\n" "$?" > "$4/exit-code"
-    ' _ "$MODEL" "$eff" "$wt" "$w" "$brief" >/dev/null 2>&1 &
+    nohup bash -c "$WORKER_CMD" _ "$MODEL" "$eff" "$wt" "$w" "$brief" >/dev/null 2>&1 &
     pid=$!
     disown "$pid" 2>/dev/null
     printf '%s\t%s\n' "$slug" "$pid" >> "$RUN_DIR/pids"
@@ -486,6 +615,13 @@ relaunch_stalled() {
 
 resume_workers() {
   local slug w wt pid n pending=0
+  # Job control, as in launch_workers: without it a stalled resume is "killed"
+  # by signalling only the wrapper, and the codex it forked runs on unobserved.
+  set -m
+  # A correction is a delta against a live session. The stall ladder relaunches
+  # from the original brief in a FRESH session, which would discard both, so a
+  # --wait that takes over this batch must know not to run it.
+  printf 'resume\n' > "$RUN_DIR/phase"
   : > "$RUN_DIR/pids"
   while read -r slug; do
     [ -n "$slug" ] || continue
@@ -520,8 +656,10 @@ resume_workers() {
       # writer (openai/codex#20919); the launch path is safe because it reads
       # the brief from stdin, but resume passes the prompt as an argument.
       cfg=(); for kv in $SOL_CODEX_CONFIG; do cfg+=(-c "$kv"); done
+      sch=(); [ -n "$SOL_REPORT_SCHEMA" ] && sch=(--output-schema "$SOL_REPORT_SCHEMA")
       codex exec resume "$6" --json -m "$1" -c model_reasoning_effort="$2" \
         ${cfg[@]+"${cfg[@]}"} \
+        ${sch[@]+"${sch[@]}"} \
         -o "$4/report.md" "$(cat "$5")" \
         > "$4/events.jsonl" 2> "$4/stderr.txt" < /dev/null
       printf "%s\n" "$?" > "$4/exit-code"
@@ -569,8 +707,29 @@ rehydrate() {
   done < <(roster)
 }
 
+# Everything the workspace holds that base does not, as one patch: committed,
+# staged and unstaged changes to tracked files (`git diff <base>` compares the
+# working tree itself to base, so it covers all three) followed by each
+# untracked file as a new-file diff. The untracked part is the point. A plain
+# `git diff` does not show a file the worker created, so a reviewer reading it
+# never saw new modules or new tests at all -- often the half of the change most
+# worth reading. This is the file the review reads instead.
+write_patch() {
+  local wt="$1" out="$2" base f
+  base="$(cut -f2 "$RUN_DIR/base")"
+  {
+    git -C "$wt" diff --no-color --no-ext-diff "$base" 2>/dev/null
+    git -C "$wt" ls-files -o --exclude-standard -z 2>/dev/null \
+      | while IFS= read -r -d '' f; do
+          # --no-index exits 1 whenever the files differ, which is always.
+          git -C "$wt" diff --no-color --no-ext-diff --no-index -- /dev/null "$f" 2>/dev/null
+        done
+  } > "$out"
+}
+
 post_process() {
-  local i slug wt w code status session commit files
+  local i slug wt w code status session commit files base_sha
+  base_sha="$(cut -f2 "$RUN_DIR/base")"
   for i in "${!SLUGS[@]}"; do
     slug="${SLUGS[i]}"; wt="${WORKTREES[i]}"; w="$OUT_DIR/$slug"
 
@@ -613,17 +772,28 @@ post_process() {
         status="timed-out"
       elif [ "$code" != "0" ]; then
         status="failed-run"
+      elif [ "$RESEARCH" -eq 1 ]; then
+        # Read-only: the tree says nothing about whether the run achieved
+        # anything. The answer is the only product, so its presence is the test.
+        if [ -s "$w/report.md" ]; then status="ok"; else status="failed-run"; fi
       elif [ -z "$(git -C "$wt" status --porcelain)" ] \
-        && { [ "$IN_PLACE" -eq 1 ] \
-             || [ "$(git -C "$wt" rev-parse HEAD)" = "$(cut -f2 "$RUN_DIR/base")" ]; }; then
+        && [ "$(git -C "$wt" rev-parse HEAD)" = "$base_sha" ]; then
         status="no-changes"
       elif [ -z "$(git -C "$wt" status --porcelain)" ]; then
-        # Clean tree but the branch has already moved past base: a resumed
-        # worker that committed earlier and made no further edits this round.
-        # There is nothing new to add/commit -- doing so anyway would find
-        # "nothing to commit" and misreport a real "ok" as failed-commit.
+        # Clean tree but HEAD has moved past base. In a worktree that is a
+        # resumed worker that committed earlier and made no further edits this
+        # round: there is nothing new to add/commit -- doing so anyway would
+        # find "nothing to commit" and misreport a real "ok" as failed-commit.
+        # In place it is a worker that committed its own work, against the
+        # brief. That used to be judged on the clean tree alone and reported as
+        # `no-changes`, with the reviewer's `git diff` empty too: real work,
+        # already in history, invisible on both channels.
         status="ok"
         commit="$(git -C "$wt" rev-parse HEAD)"
+        if [ "$IN_PLACE" -eq 1 ]; then
+          printf 'sol-parallel: %s: the worker committed in place (%s); review %s..HEAD\n' \
+            "$slug" "$commit" "$base_sha" >&2
+        fi
       else
         status="ok"
       fi
@@ -634,7 +804,7 @@ post_process() {
       # changes stay in the working tree for review, and the reviewer decides
       # what to do with them. Committing here would silently change what a
       # plain /sol leaves behind.
-      files="$(git -C "$wt" status --porcelain | sed 's/^...//')"
+      :
     elif [ "$status" = "ok" ] && [ -z "$commit" ]; then
       git -C "$wt" add -A >/dev/null 2>&1
       if git -C "$wt" commit -q -m "sol: $slug" >/dev/null 2>&1; then
@@ -657,9 +827,13 @@ post_process() {
     # gives NUL-delimited, unquoted names regardless of content; translating
     # NUL to newline matches how files-changed is already stored and parsed.
     # This is the branch's whole diff, which is what a reviewer of it wants.
-    if [ "$status" = "ok" ] && [ "$IN_PLACE" -eq 0 ]; then
+    if [ "$RESEARCH" -eq 1 ]; then
+      # Nothing was written, and the tree may hold the user's own uncommitted
+      # work, which a snapshot would wrongly attribute to the worker.
+      files=""
+    elif [ "$status" = "ok" ] && [ "$IN_PLACE" -eq 0 ]; then
       files="$(git -C "$wt" diff --name-only -z \
-        "$(cut -f2 "$RUN_DIR/base")" HEAD | tr '\0' '\n')"
+        "$base_sha" HEAD | tr '\0' '\n')"
     else
       # A non-ok worker can still have produced real work, and reporting nothing
       # for it is how that work went missing: failed-commit stages everything and
@@ -669,9 +843,10 @@ post_process() {
       # everything the worktree holds that base does not: committed since base,
       # staged or unstaged against HEAD, and untracked. `sort -u` because the
       # three sources overlap; `-z | tr` for the same bare-filename reasons as
-      # the ok path above.
+      # the ok path above. An ok in-place worker takes this path too: its work
+      # is uncommitted by design, and may also include a commit of its own.
       files="$( { git -C "$wt" diff --name-only -z \
-                    "$(cut -f2 "$RUN_DIR/base")" HEAD 2>/dev/null
+                    "$base_sha" HEAD 2>/dev/null
                   git -C "$wt" diff --name-only -z HEAD 2>/dev/null
                   git -C "$wt" ls-files -o --exclude-standard -z 2>/dev/null
                 } | tr '\0' '\n' | LC_ALL=C sort -u)"
@@ -679,6 +854,10 @@ post_process() {
 
     if [ -f "$w/started-at" ]; then
       printf '%s\n' "$(( $(date +%s) - $(cat "$w/started-at") ))" > "$w/elapsed"
+    fi
+
+    if [ "$RESEARCH" -eq 0 ] && [ -d "$wt" ]; then
+      write_patch "$wt" "$w/diff.patch"
     fi
 
     # `status` last: the re-attach idempotency guard treats its presence as
@@ -695,7 +874,7 @@ write_summary() {
   SLUG_LIST="$(printf '%s\n' "${SLUGS[@]}")" \
   WT_LIST="$(printf '%s\n' "${WORKTREES[@]}")" \
   BRIEF_LIST="$(printf '%s\n' "${BRIEF_OF[@]}")" \
-  EFFORT_DEFAULT="$EFFORT" \
+  EFFORT_DEFAULT="$EFFORT" MODEL="$MODEL" \
   python3 - <<'PY'
 import json, os, pathlib
 
@@ -711,18 +890,74 @@ def read(p, default=""):
     except OSError:
         return default
 
+def parse_report(p):
+    """The worker's final message as an object, when it is one.
+
+    With the report schema on, the final message is JSON; embedding it here
+    means one read of summary.json carries the worker's own account as well as
+    the launcher's. Free text (schema off, research, an older run) is None.
+    """
+    try:
+        data = json.loads(p.read_text())
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+def scan_events(p):
+    """Last error message and last token usage in an event log.
+
+    A failed worker's reason used to live only in the raw JSONL, so every
+    failure cost a second tool call to run the watcher over it.
+    """
+    error, usage = "", None
+    try:
+        fh = p.open()
+    except OSError:
+        return error, usage
+    with fh:
+        for line in fh:
+            try:
+                e = json.loads(line)
+            except ValueError:
+                continue
+            if not isinstance(e, dict):
+                continue
+            t = e.get("type")
+            item = e.get("item") or {}
+            if t in ("turn.failed", "turn.aborted", "error"):
+                error = e.get("message") or (e.get("error") or {}).get("message") or t
+            elif t == "item.completed" and item.get("type") == "error":
+                error = item.get("message") or "unknown error"
+            elif t == "turn.completed" and isinstance(e.get("usage"), dict):
+                usage = e["usage"]
+    return str(error)[:2000], usage
+
+def tail(p, lines=15, limit=2000):
+    try:
+        text = p.read_text(errors="replace")
+    except OSError:
+        return ""
+    return "\n".join(text.strip().splitlines()[-lines:])[-limit:]
+
 base_branch, _, base_sha = read(run_dir / "base").partition("\t")
+mode = ("research" if (run_dir / "research").exists()
+        else "in-place" if (run_dir / "in-place").exists() else "worktree")
 workers = []
 for slug, wt, brief in zip(slugs, wts, briefs):
     w = out_dir / slug
     started = read(w / "started-at")
     files = [f for f in read(w / "files-changed").split("\n") if f]
+    status = read(w / "status", "failed-launch") or "failed-launch"
+    failed = status not in ("ok", "no-changes")
+    report = parse_report(w / "report.md")
+    error, usage = scan_events(w / "events.jsonl")
+    diff = w / "diff.patch"
     workers.append({
         "slug": slug,
         "branch": f"sol/{slug}",
         "worktree": wt,
         "brief": brief,
-        "status": read(w / "status", "failed-launch") or "failed-launch",
+        "status": status,
         "exit_code": int(read(w / "exit-code") or 1),
         "session_id": read(w / "session-id"),
         "commit": read(w / "commit"),
@@ -731,13 +966,22 @@ for slug, wt, brief in zip(slugs, wts, briefs):
         "effort_used": read(w / "effort") or os.environ.get("EFFORT_DEFAULT", ""),
         "stall_retries": int(read(w / "stall-retries") or 0),
         "stall_reason": read(w / "stall-reason"),
+        # The worker's own account. A claim to check, never a verification.
+        "report": report,
+        "report_status": (report or {}).get("status", ""),
+        # Why it failed, inline, so a failure does not need the raw logs read.
+        "error": error if failed else "",
+        "stderr_tail": tail(w / "stderr.txt") if failed else "",
+        "usage": usage,
+        "diff_path": str(diff) if diff.exists() else "",
         "events_path": str(w / "events.jsonl"),
         "report_path": str(w / "report.md"),
         "stderr_path": str(w / "stderr.txt"),
     })
 
 (run_dir / "summary.json").write_text(json.dumps(
-    {"base_branch": base_branch, "base_sha": base_sha, "workers": workers},
+    {"base_branch": base_branch, "base_sha": base_sha,
+     "model": os.environ.get("MODEL", ""), "mode": mode, "workers": workers},
     indent=2) + "\n")
 PY
 }
@@ -836,6 +1080,11 @@ wait_for_workers() {
     done < <(worker_slugs)
     [ "$live" -eq 0 ] && return 0
     [ "$block" -eq 1 ] || return 75
+    # Only --wait sets a deadline: it returns 75 cleanly rather than being
+    # killed by its caller's tool-call timeout halfway through a commit.
+    if [ "${WAIT_DEADLINE:-0}" -gt 0 ] && [ "$(date +%s)" -ge "$WAIT_DEADLINE" ]; then
+      return 75
+    fi
     sleep 2
   done
 }
@@ -967,36 +1216,60 @@ case "$MODE" in
   *)       [ -d "$OUT_DIR" ] || die "no run directory to $MODE: $OUT_DIR" ;;
 esac
 
+# Wait out the current batch. For a launch batch that includes the stall retry
+# ladder: every stalled worker is relaunched one effort step lower and waited
+# for again, until none is owed a retry (SOL_STALL_RETRIES, counted per worker);
+# one that stalls with its budget spent falls through to post_process as
+# `stalled`. Returns 75 if a --wait deadline passes with workers still live.
+supervise() {
+  wait_for_workers 1 || return 75
+  if [ "$(cat "$RUN_DIR/phase" 2>/dev/null)" = "launch" ]; then
+    while relaunch_stalled; do
+      wait_for_workers 1 || return 75
+    done
+  fi
+  return 0
+}
+
 if [ "$MODE" = "wait" ]; then
   [ -f "$RUN_DIR/pids" ] || die "no pids file in $RUN_DIR"
+  case "$WAIT_TIMEOUT" in ''|*[!0-9]*) die "SOL_WAIT_TIMEOUT must be a non-negative integer" ;; esac
+  WAIT_DEADLINE=0
+  [ "$WAIT_TIMEOUT" -gt 0 ] && WAIT_DEADLINE=$(( $(date +%s) + WAIT_TIMEOUT ))
+  # While another invocation is still supervising, only watch: it owns the
+  # watchdog, the retries and the commit. The moment it is gone -- finished, or
+  # killed by its caller's timeout with workers still running -- take over.
+  # --wait used to poll once and return, which left a batch whose launcher had
+  # been killed with no watchdog at all between polls, and classified a stall
+  # it did catch as final without ever relaunching it.
+  while supervisor_alive; do
+    if [ "$WAIT_DEADLINE" -gt 0 ] && [ "$(date +%s)" -ge "$WAIT_DEADLINE" ]; then
+      exit 75
+    fi
+    sleep 1
+  done
+  claim_supervisor
   rehydrate
-  wait_for_workers 0 || exit 75
+  supervise || exit 75
   post_process
   write_summary
 fi
 
 if [ "$MODE" = "launch" ]; then
+  claim_supervisor
   create_worktrees; setup_status=$?
   [ "$DRY_RUN" -eq 1 ] && exit "$setup_status"
   launch_workers
-  wait_for_workers 1
-  # Stall retry ladder: each round relaunches every stalled worker one effort
-  # step lower, then waits again. Bounded by SOL_STALL_RETRIES; workers that
-  # stall with no rounds left fall through to post_process as `stalled`.
-  stall_round=0
-  while [ "$stall_round" -lt "$STALL_RETRIES" ]; do
-    stall_round=$((stall_round + 1))
-    relaunch_stalled "$stall_round" || break
-    wait_for_workers 1
-  done
+  supervise
   post_process
   write_summary
 fi
 
 if [ "$MODE" = "resume" ]; then
   [ -f "$RUN_DIR/pids.all" ] || die "no completed run in $RUN_DIR"
+  claim_supervisor
   resume_workers
-  wait_for_workers 1
+  supervise
   rehydrate
   post_process
   write_summary

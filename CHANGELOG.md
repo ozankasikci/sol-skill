@@ -4,6 +4,58 @@ All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.11.0] — 2026-10-05
+
+Every run now goes through the supervised launcher, and the brief and the report
+are contracts in both directions.
+
+### Added
+
+- **Structured worker report.** The launcher passes `references/report-schema.json`
+  as `--output-schema`, and `summary.json` embeds the parsed result under `report`:
+  `done` / `partial` / `blocked`, one entry per numbered acceptance criterion with
+  evidence, commands run with exit codes, deviations, blocked checks, open
+  questions. `SOL_REPORT_SCHEMA=` (empty) returns to a free-text report.
+- **`diff.patch` per worker** (`diff_path` in `summary.json`): everything the
+  worker changed against the pre-run commit, including files it created. Review
+  reads this instead of `git diff`, which omits untracked files.
+- **`--research`**: a read-only run with live web search under the same watchdog
+  and stall retry as an implementation run. Effort is `SOL_RESEARCH_EFFORT`
+  (`xhigh`), independent of `SOL_EFFORT`. Needs no clean tree.
+- **Failure detail in `summary.json`**: `error` (last error event), `stderr_tail`,
+  token `usage`, plus top-level `model` and `mode`.
+- **Brief template blocks**: `<environment>` (sandbox, network, known-blocked
+  checks), `<when_blocked>` (stop and report rather than guess), numbered
+  criteria (`AC1`…), and a slot in `<action_safety>` for the user's standing
+  rules, which Codex cannot read from `CLAUDE.md`.
+
+### Changed
+
+- **`--wait` blocks and supervises.** It used to poll once and return 75. It now
+  takes over the watchdog and the stall retry when the launching call is gone,
+  and returns 75 only after `SOL_WAIT_TIMEOUT` (540s). The retry budget is
+  counted per worker, so a takeover neither skips nor repeats a retry.
+- **Model resolution.** With `SOL_MODEL` unset the launcher follows the Codex
+  config's default model when that is a Sol model, and falls back to
+  `gpt-6.1-sol` otherwise. The model is recorded per run. `check-codex.sh`
+  resolves it the same way.
+- **`SKILL.md` routes corrections and research through the launcher** (`--resume`,
+  `--research`) and tells Claude to launch in the background. The hand-rolled
+  `codex exec resume --last` is gone, along with file paths that predated the
+  launcher.
+
+### Fixed
+
+- **A stall relaunch dropped the brief's reference images.** The relaunch was a
+  second copy of the worker command without the `-i` arguments; both now share
+  one command.
+- **An in-place worker that committed its own work was reported `no-changes`.**
+  A clean tree was the whole test. It is now `ok` with the commit recorded, and
+  the default brief tells Sol not to commit.
+- **A stalled `--resume` orphaned its `codex` process.** Job control was only
+  enabled on the launch path, so the watchdog's group kill reached the wrapper
+  alone.
+
 ## [1.10.0] — 2026-10-05
 
 ### Changed
@@ -416,6 +468,7 @@ First public release.
   test/lint/typecheck commands itself — none of which are `codex exec` calls, so all
   of them were blocked.
 
+[1.11.0]: https://github.com/ozankasikci/sol-skill/releases/tag/v1.11.0
 [1.10.0]: https://github.com/ozankasikci/sol-skill/releases/tag/v1.10.0
 [1.9.0]: https://github.com/ozankasikci/sol-skill/releases/tag/v1.9.0
 [1.8.1]: https://github.com/ozankasikci/sol-skill/releases/tag/v1.8.1

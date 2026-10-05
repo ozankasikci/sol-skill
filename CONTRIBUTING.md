@@ -31,12 +31,13 @@ In rough order of value:
 
 ## Testing a change
 
-Most of the deliverable is a prompt, so most verification is by using it. The one part
-with real tests is the progress watcher:
+Most of the deliverable is a prompt, so most verification is by using it. The parts
+with real tests are the launcher and the progress watcher:
 
 ```bash
-python3 skills/sol/scripts/tests/test_sol_watch.py   # watcher: 43 checks
-bash skills/sol/scripts/check-codex.sh               # preflight still passes
+python3 skills/sol/scripts/tests/test_sol_parallel.py   # launcher, against a fake codex
+python3 skills/sol/scripts/tests/test_sol_watch.py      # watcher
+bash skills/sol/scripts/check-codex.sh                  # preflight still passes
 ```
 
 If you change the watcher's classification rules, add a fixture line rather than only

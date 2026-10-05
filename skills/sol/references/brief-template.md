@@ -1,7 +1,8 @@
 # Sol brief template
 
-Fill this in and write it to `$SCRATCHPAD/sol-brief.md`, then pipe it into `codex exec` on stdin.
-Piping avoids shell-quoting damage to code snippets and multi-line criteria.
+Fill this in and write it to `<run-dir>/tasks/01-<slug>.md`; the launcher pipes it into
+`codex exec` on stdin, which avoids shell-quoting damage to code snippets and
+multi-line criteria.
 
 Keep it short. Sol is a frontier model — it needs intent, contracts, and fences, not
 line-by-line instructions. An over-specified brief produces worse code than a tight
@@ -20,11 +21,17 @@ Plan:
   error-handling style, naming, the module this should mirror]
 </task>
 
+<environment>
+Sandbox: [workspace-write — you can edit files in this repo; no network access.]
+Known-blocked checks: [none | e.g. "the integration suite needs Docker, which the
+sandbox cannot reach — do not try to work around it; list it under blocked_checks"]
+</environment>
+
 <acceptance_criteria>
-- [Each item a runnable command or an observable behavior.]
-- `pytest tests/test_auth.py` passes, including a case covering lockout after 5 attempts
-- `npm run typecheck` is clean
-- POST /login with a locked account returns 423, not 401
+[Number every item. Each one a runnable command or an observable behavior.]
+- AC1: `pytest tests/test_auth.py` passes, including a case covering lockout after 5 attempts
+- AC2: `npm run typecheck` is clean
+- AC3: POST /login with a locked account returns 423, not 401
 </acceptance_criteria>
 
 <non_goals>
@@ -42,15 +49,41 @@ surface. Do not report success on checks you did not run.
 <action_safety>
 No unrelated changes. No drive-by refactors, reformatting, or dependency bumps.
 Confine edits to what the task requires.
+Do not commit, and do not create or switch branches: leave your changes in the
+working tree, where they will be reviewed.
+[Standing rules for this repo and this user, copied verbatim — Sol cannot see
+CLAUDE.md or the conversation. e.g.:]
+- Never drop, wipe or reset a database, locally or remotely.
+- Never install a package system-wide; use the project's virtualenv.
 </action_safety>
 
+<when_blocked>
+You cannot ask a question mid-run. If you hit a product decision the brief does not
+settle, or a permission or tool you do not have, do not guess and do not work around
+it: stop, keep whatever is safely done, and report status `blocked` with the question
+in `open_questions`.
+</when_blocked>
+
 <output_contract>
-End your final message with:
-1. Files changed (paths only)
-2. Exact commands you ran
-3. The result of each command
+Your final message is a JSON report (the run enforces its shape):
+- `status`: `done` only if every criterion is met and you verified it; `partial` if
+  any is unmet; `blocked` if you stopped for a decision.
+- `criteria`: one entry per id above (AC1, AC2, …) with `met` and the evidence — the
+  command you ran and what it showed.
+- `commands`: only commands you actually ran, with their real exit codes.
+- `deviations`: anything you did beyond or differently from this brief, and why.
+- `blocked_checks`: any check you could not run, with the exact error.
 </output_contract>
 ```
+
+The report's shape is `references/report-schema.json`, passed by the launcher as
+`--output-schema`; it comes back parsed under `report` in `summary.json`. Numbering the
+criteria is what makes it useful: a correction can then say "AC3 is still unmet" and
+both sides mean the same line.
+
+Fill `<environment>` and the standing rules honestly rather than deleting them. They
+are the two things Sol has no other way to learn: what the sandbox will refuse, and
+what the user has already said must never happen.
 
 ## Visual tasks
 
@@ -97,7 +130,8 @@ onto a common base. A scope fence keeps declared file scopes from overlapping, w
 what makes that integration conflict-free and keeps each worker's isolated-green
 verification still meaningful once merged. Add this to every parallel brief's
 `<non_goals>`, plus a git-operation fence — the launcher, not the worker, owns commits
-and branches:
+and branches (the default `<action_safety>` already forbids committing; in a worktree
+the sandbox would refuse it anyway, so say why):
 
 ```xml
 <non_goals>
@@ -111,7 +145,9 @@ and branches:
 
 ## Research brief
 
-Only when the user explicitly names Sol as the researcher. Runs `-s read-only`.
+Only when the user explicitly names Sol as the researcher. Launched with
+`sol-parallel.sh --research`, which forces `-s read-only` and turns on live web search.
+The report schema is not applied: the answer is prose with citations, in `report.md`.
 
 ```xml
 <task>
@@ -142,13 +178,18 @@ No transcript of your search process.
 
 ## Correction messages
 
-Corrections resume the same session, so do **not** restate the brief. Send only the
-delta, and make it checkable:
+Corrections resume the same session, so do **not** restate the brief. Write only the
+delta to `<run-dir>/workers/<slug>/correction.md` and run `sol-parallel.sh --resume`.
+Make it checkable, and name the criterion:
 
 ```
-src/auth/lockout.py:42 — counter resets on every failed attempt, so lockout never
-fires. Required: the counter persists across attempts within the window and locks at
-5. `pytest tests/test_auth.py::test_lockout_after_five` must pass.
+AC1 — src/auth/lockout.py:42 — counter resets on every failed attempt, so lockout
+never fires. Required: the counter persists across attempts within the window and
+locks at 5. `pytest tests/test_auth.py::test_lockout_after_five` must pass.
 ```
 
-Three parts, every time: **where**, **what's wrong and what's required**, **what check must pass**.
+Three parts, every time: **where** (file:line and the AC id), **what's wrong and what's
+required**, **what check must pass**.
+
+Answering a `blocked` report is a correction too: quote the open question, give the
+decision, and say what to do next.

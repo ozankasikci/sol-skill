@@ -76,31 +76,35 @@ Five phases, and the interesting part is what each one refuses to do.
 
 **1. Plan.** Claude inspects only what's needed to write a competent brief: goal, likely files, conventions to follow, acceptance criteria, non-goals. It deliberately does *not* over-specify. Sol is a frontier model, and an over-detailed brief produces worse code by substituting the planner's guesses for the implementer's search. Intent and constraints, not line-by-line instructions.
 
-**2. Implement.** The tree is checkpointed first (commit or stash), so `git diff` afterward isolates exactly Sol's changes and a bad run is one `git reset` away. The brief goes to a file and is piped in on stdin, so shell quoting cannot damage code snippets:
+**2. Implement.** The tree is checkpointed first (commit or stash), so the diff afterward isolates exactly Sol's changes and a bad run is one `git reset` away. The brief goes to a file, and one supervised launcher runs it — in the background, so Claude is called back when it exits instead of polling:
 
 ```bash
-codex exec --json -m gpt-6.1-sol -c model_reasoning_effort=high \
-  -s workspace-write --color never \
-  -o "$SCRATCHPAD/sol-report.md" \
-  - < "$SCRATCHPAD/sol-brief.md" \
-  > "$SCRATCHPAD/sol-events.jsonl" 2> "$SCRATCHPAD/sol-stderr.txt"
+bash skills/sol/scripts/sol-parallel.sh --workers 1 --in-place "$SCRATCHPAD/sol-run"
 ```
 
-`--json` writes a JSONL event log alongside the report — the raw material for the optional [run summary](#summarizing-a-run) below. stderr goes to its own file, since folding it in with `2>&1` would corrupt the log.
+Under it is a plain `codex exec --json -m gpt-6.1-sol -c model_reasoning_effort=high -s workspace-write`, with the brief piped in on stdin so shell quoting cannot damage code snippets. What the launcher adds is everything a bare call lacks: a watchdog that kills a worker gone silent and relaunches it once at lower effort, and a single `summary.json` holding the outcome.
 
-The brief is compact XML blocks, not prose: `<task>`, `<acceptance_criteria>`, `<non_goals>`, `<verification_loop>`, `<action_safety>`, `<output_contract>`. GPT-6.1 Sol follows explicit contracts far better than it follows paragraphs, and **the rule is to tighten the contract before ever raising the effort level.** Template in [`skills/sol/references/brief-template.md`](skills/sol/references/brief-template.md).
+The brief is compact XML blocks, not prose: `<task>`, `<environment>`, `<acceptance_criteria>`, `<non_goals>`, `<verification_loop>`, `<action_safety>`, `<when_blocked>`, `<output_contract>`. GPT-6.1 Sol follows explicit contracts far better than it follows paragraphs, and **the rule is to tighten the contract before ever raising the effort level.** Template in [`skills/sol/references/brief-template.md`](skills/sol/references/brief-template.md).
 
-Acceptance criteria must be checkable. Not "auth is robust", but `pytest tests/test_auth.py passes with 5-attempt lockout covered`. A criterion the reviewer can't run is a criterion nobody enforces.
+Three of those blocks exist because the two models do not share a context:
 
-**3. Review the diff, not the summary.** This is the whole point, so it's the strictest phase. Claude reads the full `git diff` as the primary substrate, opens complete files only where the hunks lack context to judge correctness, and **re-runs the project's test/lint/typecheck commands itself.** Sol's own report is read for what it claims, never as verification. Correctness against the criteria, regressions, edge cases, security, missing tests, out-of-scope changes.
+- **`<action_safety>` carries your standing rules across.** Codex reads `AGENTS.md`, never `CLAUDE.md` or the conversation. "Never wipe a database" reaches Sol only if Claude copies it into the brief, so the skill tells it to.
+- **`<environment>` says what the sandbox will refuse**, so a worker that cannot run a check reports that instead of improvising around it.
+- **`<when_blocked>` gives Sol a way to ask.** `codex exec` is non-interactive; without this, an ambiguous brief gets a confident guess.
 
-**4. Corrections, capped at 2 rounds.** Blocking issues resume the same Codex session, so corrections send only the delta: the `file:line`, the observed problem, the required behavior, and the check that must pass. Not a restatement of the brief. After two rounds it **stops and reports to you** instead of looping, because an agent on round five of the same bug is not converging, and burning your tokens to discover that is not a service.
+Acceptance criteria must be checkable, and they are numbered. Not "auth is robust", but `AC1: pytest tests/test_auth.py passes with 5-attempt lockout covered`. A criterion the reviewer can't run is a criterion nobody enforces, and the id is what the report and any correction refer to.
+
+Sol's final message is not prose either. The launcher passes [`report-schema.json`](skills/sol/references/report-schema.json) as `--output-schema`, so it comes back as an object in `summary.json`: `done` / `partial` / `blocked`, one entry per criterion with its evidence, the commands actually run with their exit codes, deviations from the brief, checks it could not run, and open questions.
+
+**3. Review the diff, not the summary.** This is the whole point, so it's the strictest phase. Claude reads one patch the launcher writes — everything Sol changed, **including files it created**, which a plain `git diff` leaves out entirely — opens complete files only where the hunks lack context to judge correctness, and **re-runs the project's test/lint/typecheck commands itself.** Sol's structured report aims the review and is never taken as verification: an unmet criterion is a correction already written, a blocked check is a check nobody has run yet. Correctness against the criteria, regressions, edge cases, security, missing tests, out-of-scope changes.
+
+**4. Corrections, capped at 2 rounds.** Blocking issues resume the worker's recorded Codex session through the same launcher (`--resume`), under the same watchdog, so corrections send only the delta: the criterion id and `file:line`, the observed problem, the required behavior, and the check that must pass. Not a restatement of the brief. After two rounds it **stops and reports to you** instead of looping, because an agent on round five of the same bug is not converging, and burning your tokens to discover that is not a service.
 
 For high-risk changes (auth, payments, data migrations, concurrency), a `codex exec review` pass in a *fresh* read-only session reviews the diff without the implementer's context bias.
 
 ### Summarizing a run
 
-The run writes a `codex exec --json` event log, and [`sol-watch.py`](skills/sol/scripts/sol-watch.py) turns it into a milestone summary — the opening plan, each file changed, each test command with its exit code, genuine errors, and a closing line naming the changed files with token usage:
+Every run writes a `codex exec --json` event log (`<run-dir>/workers/<slug>/events.jsonl`). `summary.json` already carries the outcome and, for a failure, the reason; when you want the story of a run, [`sol-watch.py`](skills/sol/scripts/sol-watch.py) turns it into a milestone summary — the opening plan, each file changed, each test command with its exit code, genuine errors, and a closing line naming the changed files with token usage:
 
 ```
 [0m18s] step 2  · plan: I'll add the lockout counter to the auth module, then run the auth tests.
@@ -128,7 +132,7 @@ It is opt-in per run and never inferred — the trigger is a worker count you ty
 ```
 
 Claude shows you the split and the file scope of each task and waits before creating
-anything. Then one blocking call fans out N `codex exec` workers, each in its own
+anything. Then one launcher call fans out N `codex exec` workers, each in its own
 worktree on branch `sol/<slug>`. Claude reviews each diff, cherry-picks the approved
 branches onto your branch one at a time — one commit per task — and **re-runs your
 checks once on the merged result.** That last part is the point: each worker verified
@@ -150,7 +154,7 @@ inherit gitignored files, though `/sol` copies your `.env` files in for you.
 
 `/sol` routes on intent. Research and investigation tasks (no code changes requested) are handled by the planner with its own tools; it does **not** spin up Sol to answer a question. Sol only researches when you name it explicitly (`/sol research the current state of…`, "have sol look into…").
 
-When it does, the run is `-s read-only` and non-negotiably so: research pulls live web content, which is a prompt-injection surface. Sol's output is treated as data, never as instructions. Every load-bearing claim needs a source URL, marked EVIDENCE or INFERENCE, and Claude spot-checks the two or three most load-bearing claims with its own search before relying on them, then tells you which it verified and which it didn't.
+When it does, the run goes through the same supervised launcher (`--research`), so a research run that hangs is caught and retried like any other. It is `-s read-only` and non-negotiably so: research pulls live web content, which is a prompt-injection surface. Sol's output is treated as data, never as instructions. Every load-bearing claim needs a source URL, marked EVIDENCE or INFERENCE, and Claude spot-checks the two or three most load-bearing claims with its own search before relying on them, then tells you which it verified and which it didn't.
 
 ### What it deliberately does not do
 
@@ -307,12 +311,14 @@ bash skills/sol/scripts/check-codex.sh --json
 ### Changing the defaults
 
 The whole skill is one readable markdown file: [`skills/sol/SKILL.md`](skills/sol/SKILL.md).
-Behavior changes by editing it, with two exceptions that survive a skill update:
-`SOL_MAX_WORKERS` and `SOL_WORKTREE_SETUP` (see [Parallel workers](#parallel-workers)).
+Behavior changes by editing it; the settings that survive a skill update are environment
+variables, listed in the table at the top of that file — `SOL_MODEL`, `SOL_EFFORT`,
+`SOL_MAX_WORKERS`, `SOL_WORKTREE_SETUP` (see [Parallel workers](#parallel-workers)) and
+the watchdog budgets.
 
-**Use a different implementer.** The model is passed explicitly with `-m`, so swap it for any model your Codex CLI can reach. Nothing else in the flow assumes Sol specifically.
+**Use a different implementer.** Set `SOL_MODEL` to any model your Codex CLI can reach; nothing else in the flow assumes Sol specifically. Left unset, the launcher follows your Codex config's own default model when that is a Sol model — so switching Codex to a newer Sol is enough, with no skill update — and falls back to `gpt-6.1-sol` when the Codex default is some other family.
 
-**Change the reasoning effort.** `high` is the default: with a compiler and tests in the loop it verifies its own work, and stalls are effort-correlated — an `xhigh` worker that hangs burns the whole first-event budget before making a single tool call (observed: 900s of silence at `xhigh`, a first tool call in 36s at `high` on the same brief). Set `SOL_EFFORT=xhigh` for algorithmically hard briefs, and budget a longer timeout to match; research mode already runs at `xhigh`, because nothing there compiles.
+**Change the reasoning effort.** `high` is the default: with a compiler and tests in the loop it verifies its own work, and stalls are effort-correlated — an `xhigh` worker that hangs burns the whole first-event budget before making a single tool call (observed: 900s of silence at `xhigh`, a first tool call in 36s at `high` on the same brief). Set `SOL_EFFORT=xhigh` for algorithmically hard briefs, research mode already runs at `xhigh` (`SOL_RESEARCH_EFFORT`), because nothing there compiles.
 
 **Change the correction budget.** Two rounds is a deliberate stopping rule, not a tuning knob I'd raise casually; an agent on round five of the same bug isn't converging.
 

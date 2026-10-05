@@ -134,11 +134,27 @@ fi
 stamp end
 if [ -z "${FAKE_EMPTY:-}" ]; then
   printf '{"type":"thread.started","thread_id":"%s"}\n' "${FAKE_THREAD:-019f-$slug}"
-  printf '{"type":"turn.completed"}\n'
+  if [ -n "${FAKE_ERROR:-}" ]; then
+    printf '{"type":"turn.failed","error":{"message":"%s"}}\n' "$FAKE_ERROR"
+  else
+    printf '{"type":"turn.completed","usage":{"input_tokens":11,"output_tokens":7}}\n'
+  fi
 fi
-[ -n "$out_file" ] && printf 'fake report for %s\n' "$slug" > "$out_file"
+[ -n "${FAKE_STDERR:-}" ] && printf '%s\n' "$FAKE_STDERR" >&2
+if [ -n "$out_file" ] && [ -z "${FAKE_NOREPORT:-}" ]; then
+  if [ -n "${FAKE_REPORT:-}" ]; then
+    printf '%s\n' "$FAKE_REPORT" > "$out_file"
+  else
+    printf 'fake report for %s\n' "$slug" > "$out_file"
+  fi
+fi
 if [ -z "${FAKE_NOCHANGE:-}" ]; then
   printf 'touched by %s\n' "$slug" > "$cd_dir/${FAKE_FILENAME:-$slug.txt}"
+fi
+# A worker that commits its own work, against the brief.
+if [ -n "${FAKE_COMMIT:-}" ]; then
+  git -C "$cd_dir" add -A >/dev/null 2>&1
+  git -C "$cd_dir" commit -qm "worker committed" >/dev/null 2>&1
 fi
 exit "${FAKE_EXIT:-0}"
 """
@@ -1045,8 +1061,15 @@ with tempfile.TemporaryDirectory() as tmp:
             break
         time.sleep(0.1)
 
-    r = run(repo, bin_dir, "--wait", str(run_dir))
-    check(r.returncode == 75, f"--wait returns 75 while a worker is live (got {r.returncode})")
+    # --wait blocks. While the launcher is still supervising it only watches,
+    # and returns 75 when its own deadline passes with workers still live.
+    wait_env = dict(env); wait_env["SOL_WAIT_TIMEOUT"] = "1"
+    r = subprocess.run(["bash", str(SCRIPT), "--wait", str(run_dir)],
+                       cwd=repo, capture_output=True, text=True, check=False,
+                       env=wait_env, timeout=30)
+    check(r.returncode == 75,
+          f"--wait returns 75 at its deadline while a worker is live (got {r.returncode})")
+    check(launcher.poll() is None, "sanity: the launcher was still supervising")
 
     launcher.wait(timeout=60)
     r = run(repo, bin_dir, "--wait", str(run_dir))
@@ -2006,6 +2029,371 @@ with tempfile.TemporaryDirectory() as tmp:
     except subprocess.TimeoutExpired:
         for label in ("heartbeating worker survives", "heartbeating worker ok"):
             check(False, f"{label} (run timed out instead)")
+
+def clean_env(bin_dir: pathlib.Path, **overrides: str) -> dict:
+    """stall_env plus the knobs the newer tests care about, all cleared."""
+    env = stall_env(bin_dir)
+    for k in ("SOL_MODEL", "SOL_REPORT_SCHEMA", "SOL_RESEARCH_EFFORT",
+              "SOL_WAIT_TIMEOUT", "SOL_SANDBOX", "SOL_CODEX_CONFIG", "CODEX_HOME"):
+        env.pop(k, None)
+    env.update(overrides)
+    return env
+
+
+def launch(repo, env, *args, timeout=60):
+    return subprocess.run(["bash", str(SCRIPT), *args], cwd=repo,
+                          capture_output=True, text=True, check=False,
+                          env=env, timeout=timeout)
+
+
+print("stall retry ladder: the relaunch keeps the brief's reference images")
+with tempfile.TemporaryDirectory() as tmp:
+    root = pathlib.Path(tmp)
+    bin_dir = root / "bin"
+    install_fake_codex(bin_dir)
+    repo = make_repo(root / "repo")
+    run_dir = root / "run"
+    write_tasks(run_dir, "visual")
+    shot = root / "shot.png"
+    shot.write_bytes(b"\x89PNG")
+    (run_dir / "tasks" / "01-visual.images").write_text(f"{shot}\n")
+    arglog = root / "args.log"
+    env = clean_env(bin_dir, FAKE_STALL_EFFORTS="high", FAKE_ARGLOG=str(arglog),
+                    SOL_FIRST_EVENT_TIMEOUT="3", SOL_STALL_RETRIES="1")
+    r = launch(repo, env, "--workers", "1", "--in-place", str(run_dir))
+    check(r.returncode == 0, f"run recovers after the retry (stderr: {r.stderr[:200]})")
+    lines = arglog.read_text().splitlines()
+    first = [l for l in lines if "model_reasoning_effort=high" in l]
+    retry = [l for l in lines if "model_reasoning_effort=medium" in l]
+    check(len(first) == 1 and f"-i {shot}" in first[0],
+          "sanity: the first launch attached the image")
+    # The relaunch command was a second, hand-copied codex invocation that never
+    # got the -i arguments: a stalled visual task retried with a brief still
+    # describing attachments that were no longer attached.
+    check(len(retry) == 1 and f"-i {shot}" in retry[0],
+          f"the stall relaunch attaches the image too (retry args: {retry!r})")
+
+print("--wait takes over supervision when the launching call was killed")
+with tempfile.TemporaryDirectory() as tmp:
+    import signal, time
+    root = pathlib.Path(tmp)
+    bin_dir = root / "bin"
+    install_fake_codex(bin_dir)
+    repo = make_repo(root / "repo")
+    run_dir = root / "run"
+    write_tasks(run_dir, "orphan")
+    arglog = root / "args.log"
+    env = clean_env(bin_dir, FAKE_STALL_EFFORTS="high", FAKE_ARGLOG=str(arglog),
+                    SOL_FIRST_EVENT_TIMEOUT="3", SOL_STALL_RETRIES="1")
+    launcher = subprocess.Popen(
+        ["bash", str(SCRIPT), "--workers", "1", "--in-place", str(run_dir)],
+        cwd=repo, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env)
+    for _ in range(100):
+        if (run_dir / "pids").is_file() and (run_dir / "pids").read_text().strip():
+            break
+        time.sleep(0.05)
+    # What a tool-call timeout does: the launcher dies, the worker does not.
+    launcher.send_signal(signal.SIGKILL)
+    launcher.wait(timeout=10)
+    check(not (run_dir / "summary.json").exists(),
+          "sanity: the launcher died before the worker stalled or finished")
+    try:
+        r = launch(repo, env, "--wait", str(run_dir), timeout=60)
+        # --wait used to poll once and return: between polls nothing watched the
+        # worker at all, and a stall it did catch was final -- the retry the
+        # launcher would have issued was simply never issued.
+        check(r.returncode == 0,
+              f"--wait supervises to completion and exits 0 (got {r.returncode}, "
+              f"stderr: {r.stderr[:200]})")
+        s = json.loads((run_dir / "summary.json").read_text())
+        wk = s["workers"][0]
+        check(wk["status"] == "ok" and wk["stall_retries"] == 1
+              and wk["effort_used"] == "medium",
+              f"--wait caught the stall and relaunched one step lower "
+              f"(status {wk['status']!r}, retries {wk['stall_retries']}, "
+              f"effort {wk['effort_used']!r})")
+        check("model_reasoning_effort=medium" in arglog.read_text(),
+              "the relaunch really ran")
+    except subprocess.TimeoutExpired:
+        for label in ("--wait supervises to completion", "--wait relaunches the stall",
+                      "the relaunch really ran"):
+            check(False, f"{label} (timed out instead)")
+
+print("--wait does not spend a stall retry that was already used")
+with tempfile.TemporaryDirectory() as tmp:
+    root = pathlib.Path(tmp)
+    bin_dir = root / "bin"
+    install_fake_codex(bin_dir)
+    repo = make_repo(root / "repo")
+    run_dir = root / "run"
+    write_tasks(run_dir, "hopeless")
+    arglog = root / "args.log"
+    # Stalls at every effort: one retry is owed, a second is not.
+    env = clean_env(bin_dir, FAKE_STALL_MODE="prelude", FAKE_ARGLOG=str(arglog),
+                    SOL_FIRST_EVENT_TIMEOUT="2", SOL_STALL_RETRIES="1")
+    try:
+        r = launch(repo, env, "--workers", "1", "--in-place", str(run_dir), timeout=60)
+        check(r.returncode == 1, f"a worker that always stalls fails the run (got {r.returncode})")
+        n_before = len(arglog.read_text().splitlines())
+        check(n_before == 2, f"launch plus exactly one retry (got {n_before} invocations)")
+        r = launch(repo, env, "--wait", str(run_dir), timeout=30)
+        check(r.returncode == 1 and len(arglog.read_text().splitlines()) == n_before,
+              "a later --wait reports the stall and relaunches nothing")
+    except subprocess.TimeoutExpired:
+        check(False, "exhausted-retries run (timed out instead)")
+
+print("--in-place: a worker that commits its own work is not reported as no-changes")
+with tempfile.TemporaryDirectory() as tmp:
+    root = pathlib.Path(tmp)
+    bin_dir = root / "bin"
+    install_fake_codex(bin_dir)
+    repo = make_repo(root / "repo")
+    run_dir = root / "run"
+    write_tasks(run_dir, "eager")
+    base = git(repo, "rev-parse", "HEAD")
+    r = launch(repo, clean_env(bin_dir, FAKE_COMMIT="1"),
+               "--workers", "1", "--in-place", str(run_dir))
+    head = git(repo, "rev-parse", "HEAD")
+    check(head != base and git(repo, "status", "--porcelain") == "",
+          "sanity: the worker committed and left a clean tree")
+    wk = json.loads((run_dir / "summary.json").read_text())["workers"][0]
+    # A clean tree used to be the whole test in place, so this was `no-changes`
+    # with an empty files_changed -- and the reviewer's `git diff` was empty too.
+    check(wk["status"] == "ok", f"classified ok, not no-changes (got {wk['status']!r})")
+    check(wk["commit"] == head, "the worker's own commit is recorded")
+    check(wk["files_changed"] == ["eager.txt"],
+          f"files_changed covers the committed work (got {wk['files_changed']!r})")
+    check("committed in place" in r.stderr, "says so on stderr")
+    patch = pathlib.Path(wk["diff_path"]).read_text()
+    check("eager.txt" in patch and "+touched by eager" in patch,
+          "diff.patch shows the committed change against base")
+
+print("diff.patch: a file the worker created is in the patch")
+with tempfile.TemporaryDirectory() as tmp:
+    root = pathlib.Path(tmp)
+    bin_dir = root / "bin"
+    install_fake_codex(bin_dir)
+    repo = make_repo(root / "repo")
+    run_dir = root / "run"
+    write_tasks(run_dir, "newfile")
+    launch(repo, clean_env(bin_dir), "--workers", "1", "--in-place", str(run_dir))
+    wk = json.loads((run_dir / "summary.json").read_text())["workers"][0]
+    check("newfile.txt" not in git(repo, "diff"),
+          "sanity: plain `git diff` does not show the untracked file at all")
+    patch = pathlib.Path(wk["diff_path"]).read_text() if wk["diff_path"] else ""
+    check("newfile.txt" in patch and "+touched by newfile" in patch,
+          "diff.patch carries the new file's content")
+    check("?? newfile.txt" in git(repo, "status", "--porcelain"),
+          "writing the patch leaves the file untracked and the index untouched")
+
+    # Worktree mode: the launcher commits, and the patch is the branch's diff.
+    repo2 = make_repo(root / "repo2")
+    run_dir2 = root / "run2"
+    write_tasks(run_dir2, "branchy")
+    launch(repo2, clean_env(bin_dir), "--workers", "1", str(run_dir2))
+    wk = json.loads((run_dir2 / "summary.json").read_text())["workers"][0]
+    patch = pathlib.Path(wk["diff_path"]).read_text() if wk["diff_path"] else ""
+    check("+touched by branchy" in patch, "worktree mode writes the branch diff too")
+
+print("--research")
+with tempfile.TemporaryDirectory() as tmp:
+    root = pathlib.Path(tmp)
+    bin_dir = root / "bin"
+    install_fake_codex(bin_dir)
+    repo = make_repo(root / "repo")
+    (repo / "README.md").write_text("uncommitted edit\n")      # dirty on purpose
+    run_dir = root / "run"
+    write_tasks(run_dir, "question")
+    arglog = root / "args.log"
+    env = clean_env(bin_dir, FAKE_ARGLOG=str(arglog), FAKE_NOCHANGE="1", SOL_EFFORT="low")
+    r = launch(repo, env, "--workers", "1", "--research", str(run_dir))
+    check(r.returncode == 0,
+          f"--research runs on a dirty tree and exits 0 (got {r.returncode}, "
+          f"stderr: {r.stderr[:200]})")
+    args = arglog.read_text()
+    check("-s read-only" in args, "research is read-only")
+    check('web_search="live"' in args, "research turns on live web search")
+    check("model_reasoning_effort=xhigh" in args,
+          "research runs at xhigh even with SOL_EFFORT lowered")
+    check("--output-schema" not in args, "the implementation report schema is not applied")
+    check("sandbox is" not in r.stderr, "no dropped-confinement warning for read-only")
+    s = json.loads((run_dir / "summary.json").read_text())
+    wk = s["workers"][0]
+    check(s["mode"] == "research" and wk["status"] == "ok",
+          f"classified ok on the report alone (mode {s['mode']!r}, status {wk['status']!r})")
+    check(wk["files_changed"] == [] and wk["diff_path"] == "",
+          "the user's own uncommitted work is not attributed to the worker")
+    check(not (root / ".sol-worktrees").exists(), "no worktree is created")
+
+    # A follow-up question resumes the same session with the same settings.
+    arglog.write_text("")
+    (run_dir / "workers" / "question" / "correction.md").write_text("And since when?\n")
+    r = launch(repo, env, "--resume", str(run_dir))
+    args = arglog.read_text()
+    check(r.returncode == 0 and "exec resume 019f-question" in args,
+          f"--resume follows up in the recorded session (got {r.returncode}, args: {args!r})")
+    check('web_search="live"' in args and "model_reasoning_effort=xhigh" in args
+          and "--output-schema" not in args,
+          "the follow-up inherits the research settings without retyping --research")
+
+    # No answer is a failure, whatever the exit code says.
+    run_dir2 = root / "run2"
+    write_tasks(run_dir2, "silent")
+    env2 = dict(env); env2["FAKE_NOREPORT"] = "1"
+    r = launch(repo, env2, "--workers", "1", "--research", str(run_dir2))
+    wk = json.loads((run_dir2 / "summary.json").read_text())["workers"][0]
+    check(r.returncode == 1 and wk["status"] == "failed-run",
+          f"a research run that produced no report fails (got {r.returncode}, {wk['status']!r})")
+
+print("report schema")
+with tempfile.TemporaryDirectory() as tmp:
+    root = pathlib.Path(tmp)
+    bin_dir = root / "bin"
+    install_fake_codex(bin_dir)
+    repo = make_repo(root / "repo")
+    run_dir = root / "run"
+    write_tasks(run_dir, "typed")
+    arglog = root / "args.log"
+    report = {"status": "partial", "summary": "half done",
+              "criteria": [{"id": "AC1", "met": True, "evidence": "pytest: 3 passed"},
+                           {"id": "AC2", "met": False, "evidence": "not attempted"}],
+              "commands": [], "files_changed": ["typed.txt"], "deviations": [],
+              "blocked_checks": [], "open_questions": []}
+    env = clean_env(bin_dir, FAKE_ARGLOG=str(arglog), FAKE_REPORT=json.dumps(report))
+    r = launch(repo, env, "--workers", "1", "--in-place", str(run_dir))
+    args = arglog.read_text()
+    schema = HERE.parent.parent / "references" / "report-schema.json"
+    check(schema.is_file() and isinstance(json.loads(schema.read_text()), dict),
+          "the bundled schema exists and is valid JSON")
+    check("--output-schema " in args and "report-schema.json" in args,
+          "the bundled schema is passed by default")
+    wk = json.loads((run_dir / "summary.json").read_text())["workers"][0]
+    check(wk["report"] == report and wk["report_status"] == "partial",
+          "summary.json embeds the worker's structured report")
+    check(wk["status"] == "ok",
+          "the launcher's status stays its own judgement, not the worker's claim")
+    check(wk["usage"] == {"input_tokens": 11, "output_tokens": 7},
+          f"token usage is carried into the summary (got {wk['usage']!r})")
+
+    # Strict structured output rejects a schema that is not closed.
+    def closed(node):
+        if node.get("type") == "object":
+            return (node.get("additionalProperties") is False
+                    and sorted(node.get("required", [])) == sorted(node["properties"])
+                    and all(closed(v) for v in node["properties"].values()))
+        if node.get("type") == "array":
+            return closed(node["items"])
+        return True
+    check(closed(json.loads(schema.read_text())),
+          "every object in the schema is closed and lists all its properties as required")
+
+    # A correction keeps the same contract.
+    arglog.write_text("")
+    (run_dir / "workers" / "typed" / "correction.md").write_text("typed.txt:1 — fix.\n")
+    launch(repo, env, "--resume", str(run_dir))
+    check("--output-schema " in arglog.read_text(), "--resume passes the schema too")
+
+    # Opt out: an explicitly empty value means free text.
+    arglog.write_text("")
+    repo2 = make_repo(root / "repo2")
+    run_dir2 = root / "run2"
+    write_tasks(run_dir2, "prose")
+    env2 = clean_env(bin_dir, FAKE_ARGLOG=str(arglog), SOL_REPORT_SCHEMA="")
+    r = launch(repo2, env2, "--workers", "1", "--in-place", str(run_dir2))
+    wk = json.loads((run_dir2 / "summary.json").read_text())["workers"][0]
+    check(r.returncode == 0 and "--output-schema" not in arglog.read_text(),
+          "SOL_REPORT_SCHEMA= disables the schema")
+    check(wk["report"] is None and wk["report_status"] == "",
+          "a free-text report is not misread as structured")
+
+    run_dir3 = root / "run3"
+    write_tasks(run_dir3, "gone")
+    repo3 = make_repo(root / "repo3")
+    r = launch(repo3, clean_env(bin_dir, SOL_REPORT_SCHEMA=str(root / "nope.json")),
+               "--workers", "1", "--in-place", str(run_dir3))
+    check(r.returncode == 2 and "report schema not found" in r.stderr,
+          "a missing schema file fails at preflight, before any launch")
+
+print("summary: a failure carries its reason")
+with tempfile.TemporaryDirectory() as tmp:
+    root = pathlib.Path(tmp)
+    bin_dir = root / "bin"
+    install_fake_codex(bin_dir)
+    repo = make_repo(root / "repo")
+    run_dir = root / "run"
+    write_tasks(run_dir, "broken")
+    env = clean_env(bin_dir, FAKE_EXIT="3", FAKE_ERROR="stream disconnected",
+                    FAKE_STDERR="fatal: quota exceeded")
+    r = launch(repo, env, "--workers", "1", "--in-place", str(run_dir))
+    wk = json.loads((run_dir / "summary.json").read_text())["workers"][0]
+    check(r.returncode == 1 and wk["status"] == "failed-run", "sanity: the run failed")
+    check(wk["error"] == "stream disconnected",
+          f"the last error event is inlined (got {wk['error']!r})")
+    check("quota exceeded" in wk["stderr_tail"], "so is the tail of stderr")
+
+    repo2 = make_repo(root / "repo2")
+    run_dir2 = root / "run2"
+    write_tasks(run_dir2, "fine")
+    launch(repo2, clean_env(bin_dir, FAKE_STDERR="a harmless warning"),
+           "--workers", "1", "--in-place", str(run_dir2))
+    wk = json.loads((run_dir2 / "summary.json").read_text())["workers"][0]
+    check(wk["error"] == "" and wk["stderr_tail"] == "",
+          "a successful worker's stderr noise is not surfaced as a failure reason")
+
+print("model resolution")
+with tempfile.TemporaryDirectory() as tmp:
+    root = pathlib.Path(tmp)
+    bin_dir = root / "bin"
+    install_fake_codex(bin_dir)
+    arglog = root / "args.log"
+
+    def model_used(n: int, config: str | None, **extra: str) -> tuple[str, str]:
+        repo = make_repo(root / f"repo{n}")
+        run_dir = root / f"run{n}"
+        write_tasks(run_dir, "m")
+        home = root / f"codex{n}"
+        home.mkdir()
+        if config is not None:
+            (home / "config.toml").write_text(config)
+        arglog.write_text("")
+        launch(repo, clean_env(bin_dir, FAKE_ARGLOG=str(arglog),
+                               CODEX_HOME=str(home), **extra),
+               "--workers", "1", "--in-place", str(run_dir))
+        args = arglog.read_text().split()
+        used = args[args.index("-m") + 1] if "-m" in args else ""
+        return used, json.loads((run_dir / "summary.json").read_text())["model"]
+
+    used, recorded = model_used(1, 'model = "gpt-9-sol"\n')
+    check(used == "gpt-9-sol" and recorded == "gpt-9-sol",
+          f"follows the Codex config's default when it is a Sol model (got {used!r})")
+    used, _ = model_used(2, 'model = "gpt-9-luna"\n')
+    check(used == "gpt-6.1-sol",
+          f"a non-Sol Codex default does not hijack /sol (got {used!r})")
+    used, _ = model_used(3, None)
+    check(used == "gpt-6.1-sol", f"no Codex config falls back to the pinned model (got {used!r})")
+    used, _ = model_used(4, 'approval_policy = "never"\n\n[profiles.fast]\nmodel = "gpt-9-sol"\n')
+    check(used == "gpt-6.1-sol",
+          f"a model set inside a [section] is not the top-level default (got {used!r})")
+    used, _ = model_used(5, 'model = "gpt-9-sol"\n', SOL_MODEL="gpt-7-astra")
+    check(used == "gpt-7-astra", f"an explicit SOL_MODEL always wins (got {used!r})")
+    used, _ = model_used(6, "model='gpt-9-sol-preview'  # pinned\n")
+    check(used == "gpt-9-sol-preview",
+          f"single quotes, no spaces and a trailing comment all parse (got {used!r})")
+
+    # The model is a property of the run: a later invocation must not move it.
+    repo = make_repo(root / "repo7")
+    run_dir = root / "run7"
+    write_tasks(run_dir, "sticky")
+    home = root / "codex7"; home.mkdir()
+    (home / "config.toml").write_text('model = "gpt-9-sol"\n')
+    env = clean_env(bin_dir, FAKE_ARGLOG=str(arglog), CODEX_HOME=str(home))
+    launch(repo, env, "--workers", "1", "--in-place", str(run_dir))
+    (home / "config.toml").write_text('model = "gpt-10-sol"\n')
+    arglog.write_text("")
+    (run_dir / "workers" / "sticky" / "correction.md").write_text("sticky.txt:1 — fix.\n")
+    launch(repo, env, "--resume", str(run_dir))
+    check("-m gpt-9-sol " in arglog.read_text(),
+          f"--resume keeps the model the run was launched with (args: {arglog.read_text()!r})")
 
 print()
 if failures:

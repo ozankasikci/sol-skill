@@ -3,12 +3,14 @@
 # authenticated, and pointed at a usable model. Runs no research and edits nothing.
 #
 # Usage: bash scripts/check-codex.sh [--json] [model]
-#   model  defaults to gpt-6.1-sol
+#   model  defaults to what sol-parallel.sh would launch: $SOL_MODEL, else the
+#          Codex config's default model when that is a Sol model, else
+#          gpt-6.1-sol
 
 set -uo pipefail
 
 json=0
-MODEL="gpt-6.1-sol"
+MODEL=""
 model_set=0
 for arg in "$@"; do
   if [ "$arg" = "--json" ]; then
@@ -20,6 +22,19 @@ for arg in "$@"; do
 done
 
 CODEX_HOME="${CODEX_HOME:-$HOME/.codex}"
+
+# Mirrors resolve_model in sol-parallel.sh, so the preflight checks the model a
+# run would actually use rather than a second hardcoded guess.
+if [ "$model_set" -eq 0 ]; then
+  MODEL="${SOL_MODEL:-}"
+  if [ -z "$MODEL" ] && [ -f "$CODEX_HOME/config.toml" ]; then
+    MODEL="$(sed -n -e '/^[[:space:]]*\[/q' \
+      -e 's/^[[:space:]]*model[[:space:]]*=[[:space:]]*["'"'"']\{0,1\}\([^"'"'"'#[:space:]]*\).*/\1/p' \
+      "$CODEX_HOME/config.toml" 2>/dev/null | head -1)"
+    case "$MODEL" in *-sol|*-sol-*) ;; *) MODEL="" ;; esac
+  fi
+  [ -n "$MODEL" ] || MODEL="gpt-6.1-sol"
+fi
 fail=0
 warn=0
 check_names=()

@@ -59,7 +59,8 @@ Checkpoint first: `sol-parallel.sh` refuses to launch against a dirty working tr
 (every worker worktrees off `HEAD`, so uncommitted changes on the current branch would
 leak into all of them). Commit or stash before launching.
 
-One blocking call:
+One call, **run in the background** when the harness can (Bash `run_in_background:
+true`) — you are re-invoked when it exits, with nothing to poll:
 
 ```bash
 bash <skill-dir>/scripts/sol-parallel.sh --workers N "$SCRATCHPAD/sol-run"
@@ -73,16 +74,21 @@ inactivity watchdog — so this single call can run far longer than one tool-cal
 There is deliberately no default cap on how long a worker may take: a task's duration is
 not predictable, so any constant kills productive workers. What is bounded is silence.
 
-If the tool call itself times out before the script returns, the workers are still
-running unattended — that is not a failure, just an interrupted wait. Re-attach:
+If the call is run in the foreground and times out before the script returns, the
+launcher is gone but the workers are still running — that is not a failure, just an
+interrupted wait. Re-attach:
 
 ```bash
 bash <skill-dir>/scripts/sol-parallel.sh --wait "$SCRATCHPAD/sol-run"
 ```
 
-`--wait` exits 75 while any worker is still running, 0 once all finished cleanly, 1 if
-at least one worker landed in a non-`ok`/`no-changes` state. Keep re-invoking `--wait`
-until it stops returning 75. **Never launch `codex` directly in parallel mode** — the
+`--wait` blocks and **takes over supervision**: with the launcher gone it runs the
+inactivity watchdog and the stall retries itself, so the batch is never unwatched
+between calls. (While the launcher is still alive it only watches, and lets the
+launcher finish the job.) It exits 0 once all workers finished cleanly, 1 if at least
+one landed in a non-`ok`/`no-changes` state, and 75 if `SOL_WAIT_TIMEOUT` (default
+540s; `0` = no limit) passes with workers still live — re-invoke it until it stops
+returning 75. **Never launch `codex` directly in parallel mode** — the
 script owns branch, worktree, and session bookkeeping that a hand-rolled command would
 break.
 
@@ -97,15 +103,23 @@ Once the launch call (or the last `--wait`) returns 0 or 1, read
 pointed to below. It has one entry per worker in its `workers` array: `slug`, `branch`
 (`sol/<slug>`), `worktree` (absolute path), `status`, `exit_code`, `session_id`,
 `commit`, `files_changed`, `elapsed_seconds`, `effort_used`, `stall_retries`,
-`stall_reason`, and the paths to that worker's `report.md` / `events.jsonl` /
-`stderr.txt`.
+`stall_reason`, `report`, `report_status`, `error`, `stderr_tail`, `usage`,
+`diff_path`, and the paths to that worker's `report.md` / `events.jsonl` /
+`stderr.txt`. The top level also records `model` and `mode`.
+
+`report` is the worker's own final message, parsed: `status` (`done` · `partial` ·
+`blocked`), one `criteria` entry per `AC` id with `met` and `evidence`, the `commands`
+it ran, `deviations`, `blocked_checks`, `open_questions`. It is a claim, not a
+verification — use it to aim the review in step 7. A worker whose `report_status` is
+`blocked` stopped for a decision: answer its `open_questions` through step 9. For a
+non-`ok` worker, `error` and `stderr_tail` carry the reason inline, so the raw logs
+stay unread.
 
 `status` is one of: `ok` · `no-changes` · `failed-launch` · `failed-run` ·
 `failed-setup` · `failed-commit` · `timed-out` · `stalled`.
 
 - `failed-launch` means codex itself never produced an event (bad invocation, binary
-  missing) — read the *tail* of that worker's `stderr.txt` (path from `summary.json`),
-  not the whole file.
+  missing) — `stderr_tail` in `summary.json` has the reason.
 - `failed-setup` means `SOL_WORKTREE_SETUP` failed before codex ever ran — check
   `<run-dir>/workers/<slug>/setup.log`.
 - `stalled` means the inactivity watchdog killed the worker: no substantive event
@@ -144,13 +158,17 @@ For each `ok` worker, in the order the tasks were assigned:
 git diff --stat <base_sha>..sol/<slug>
 ```
 
-(`<base_sha>` is `summary.json`'s `base_sha`.) Then read the full branch diff. Hold it
+(`<base_sha>` is `summary.json`'s `base_sha`.) Then read the full branch diff — the
+worker's `diff_path` is that diff already written to a file. Hold it
 to the same standard as the single-worker flow's phase 3 — correctness against the
 brief's acceptance criteria, regressions, edge cases, security, missing tests,
 out-of-scope changes.
 
 Additionally check the worker stayed inside the file scope its brief declared —
-compare against that worker's `files_changed` in `summary.json`.
+compare against that worker's `files_changed` in `summary.json` — and go through its
+`report`: a criterion with `met: false` is a correction already written, an entry in
+`blocked_checks` is a check nobody has run yet, and each `deviation` needs an explicit
+yes or no.
 
 ## 8. Integrate one branch at a time
 
@@ -193,9 +211,13 @@ accepts no `-C`, `-s`, or `--color` (verified against codex-cli 0.144.6); the sc
 already handles this. **Never construct a `codex exec resume` command by hand in
 parallel mode.**
 
-`--resume` blocks the same way `--workers` does in step 5 — if the tool call times out
-before it returns, re-attach with the same `--wait "$SCRATCHPAD/sol-run"` call, then
-re-read `summary.json` once it exits 0 or 1.
+`--resume` runs the same way `--workers` does in step 5 — background it, or if a
+foreground call times out before it returns, re-attach with the same
+`--wait "$SCRATCHPAD/sol-run"` call, then re-read `summary.json` once it exits 0 or 1.
+A resumed worker that stalls is reported `stalled` and not relaunched: the retry
+ladder restarts from the original brief in a fresh session, which would discard the
+session the correction depends on. Write its `correction.md` again and `--resume`
+once more.
 
 Each round's `correction.md` is renamed to `correction-1.md`, `correction-2.md`, ... as
 it's consumed, so rounds are visible on disk per worker. Track rounds per worker
