@@ -5,7 +5,7 @@
 # Usage: bash scripts/check-codex.sh [--json] [model]
 #   model  defaults to what sol-parallel.sh would launch: $SOL_MODEL, else the
 #          Codex config's default model when that is a Sol model, else
-#          gpt-6.1-sol
+#          gpt-6.2-sol
 
 set -uo pipefail
 
@@ -33,7 +33,7 @@ if [ "$model_set" -eq 0 ]; then
       "$CODEX_HOME/config.toml" 2>/dev/null | head -1)"
     case "$MODEL" in *-sol|*-sol-*) ;; *) MODEL="" ;; esac
   fi
-  [ -n "$MODEL" ] || MODEL="gpt-6.1-sol"
+  [ -n "$MODEL" ] || MODEL="gpt-6.2-sol"
 fi
 fail=0
 warn=0

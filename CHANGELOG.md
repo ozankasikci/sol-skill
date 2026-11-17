@@ -4,6 +4,20 @@ All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.12.0] — 2026-11-17
+
+### Changed
+
+- **The implementer is now GPT-6.2 Sol (`gpt-6.2-sol`)**, released today. The
+  pinned fallback in `sol-parallel.sh` and `check-codex.sh`, every command in
+  `SKILL.md`, and the README moved from `gpt-6.1-sol`. It is the model used
+  whenever `SOL_MODEL` is unset and the Codex config's default is not a Sol
+  model. OpenAI prices it the same as GPT-6.1 Sol.
+- **The stall ladder covers `max` and `ultra`.** A worker launched at either
+  steps down (`ultra → max → xhigh → high → …`) instead of retrying at the
+  effort that stalled. The default stays `high`; `SKILL.md` advises against
+  `ultra`, which Codex describes as adding automatic task delegation.
+
 ## [1.11.1] — 2026-10-05
 
 ### Fixed
@@ -492,6 +506,7 @@ First public release.
   test/lint/typecheck commands itself — none of which are `codex exec` calls, so all
   of them were blocked.
 
+[1.12.0]: https://github.com/ozankasikci/sol-skill/releases/tag/v1.12.0
 [1.11.1]: https://github.com/ozankasikci/sol-skill/releases/tag/v1.11.1
 [1.11.0]: https://github.com/ozankasikci/sol-skill/releases/tag/v1.11.0
 [1.10.0]: https://github.com/ozankasikci/sol-skill/releases/tag/v1.10.0

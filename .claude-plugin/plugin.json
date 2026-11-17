@@ -1,7 +1,7 @@
 {
   "name": "sol",
-  "version": "1.11.1",
-  "description": "Two frontier models, one job each. Claude plans and reviews; GPT-6.1 Sol writes the code via Codex CLI. The model that wrote the diff never grades it.",
+  "version": "1.12.0",
+  "description": "Two frontier models, one job each. Claude plans and reviews; GPT-6.2 Sol writes the code via Codex CLI. The model that wrote the diff never grades it.",
   "author": {
     "name": "Ozan Ka\u015f\u0131k\u00e7\u0131",
     "url": "https://github.com/ozankasikci"
@@ -11,7 +11,7 @@
   "license": "MIT",
   "keywords": [
     "codex",
-    "gpt-6.1",
+    "gpt-6.2",
     "sol",
     "code-review",
     "delegation",

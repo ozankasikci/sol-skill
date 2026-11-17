@@ -106,7 +106,7 @@
 set -uo pipefail
 
 # The pinned fallback. See resolve_model for when it is used.
-DEFAULT_MODEL="gpt-6.1-sol"
+DEFAULT_MODEL="gpt-6.2-sol"
 EFFORT="${SOL_EFFORT:-high}"
 RESEARCH_EFFORT="${SOL_RESEARCH_EFFORT:-xhigh}"
 WAIT_TIMEOUT="${SOL_WAIT_TIMEOUT:-540}"
@@ -172,8 +172,13 @@ resolve_model() {
 
 # One reasoning-effort step down. Stalls are empirically effort-correlated
 # (openai/codex#24260, #23807), so a stalled worker retries lower, never equal.
+#
+# max and ultra sit above xhigh on current Sol models; a stall at either steps
+# down through the same ladder rather than retrying at the effort that stalled.
 next_effort() {
   case "$1" in
+    ultra)  echo max ;;
+    max)    echo xhigh ;;
     xhigh)  echo high ;;
     high)   echo medium ;;
     medium) echo low ;;

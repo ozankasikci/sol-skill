@@ -2367,12 +2367,12 @@ with tempfile.TemporaryDirectory() as tmp:
     check(used == "gpt-9-sol" and recorded == "gpt-9-sol",
           f"follows the Codex config's default when it is a Sol model (got {used!r})")
     used, _ = model_used(2, 'model = "gpt-9-luna"\n')
-    check(used == "gpt-6.1-sol",
+    check(used == "gpt-6.2-sol",
           f"a non-Sol Codex default does not hijack /sol (got {used!r})")
     used, _ = model_used(3, None)
-    check(used == "gpt-6.1-sol", f"no Codex config falls back to the pinned model (got {used!r})")
+    check(used == "gpt-6.2-sol", f"no Codex config falls back to the pinned model (got {used!r})")
     used, _ = model_used(4, 'approval_policy = "never"\n\n[profiles.fast]\nmodel = "gpt-9-sol"\n')
-    check(used == "gpt-6.1-sol",
+    check(used == "gpt-6.2-sol",
           f"a model set inside a [section] is not the top-level default (got {used!r})")
     used, _ = model_used(5, 'model = "gpt-9-sol"\n', SOL_MODEL="gpt-7-astra")
     check(used == "gpt-7-astra", f"an explicit SOL_MODEL always wins (got {used!r})")
@@ -2426,6 +2426,28 @@ with tempfile.TemporaryDirectory() as tmp:
     except subprocess.TimeoutExpired:
         launcher.kill()
         check(False, "sol-watch --run never returned for a run that finished")
+
+print("stall retry ladder: max and ultra step down too")
+with tempfile.TemporaryDirectory() as tmp:
+    root = pathlib.Path(tmp)
+    bin_dir = root / "bin"
+    install_fake_codex(bin_dir)
+    for n, (start, expect) in enumerate((("ultra", "max"), ("max", "xhigh"))):
+        repo = make_repo(root / f"repo{n}")
+        run_dir = root / f"run{n}"
+        write_tasks(run_dir, f"top{n}")
+        arglog = root / f"args{n}.log"
+        env = clean_env(bin_dir, SOL_EFFORT=start, FAKE_STALL_EFFORTS=start,
+                        FAKE_ARGLOG=str(arglog), SOL_FIRST_EVENT_TIMEOUT="3",
+                        SOL_STALL_RETRIES="1")
+        try:
+            r = launch(repo, env, "--workers", "1", "--in-place", str(run_dir), timeout=60)
+            wk = json.loads((run_dir / "summary.json").read_text())["workers"][0]
+            check(r.returncode == 0 and wk["effort_used"] == expect
+                  and f"model_reasoning_effort={expect}" in arglog.read_text(),
+                  f"a stall at {start} relaunches at {expect} (got {wk['effort_used']!r})")
+        except subprocess.TimeoutExpired:
+            check(False, f"{start} ladder run (timed out instead)")
 
 print()
 if failures:

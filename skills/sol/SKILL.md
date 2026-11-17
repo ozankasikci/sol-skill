@@ -1,7 +1,7 @@
 ---
 name: sol
-version: "1.11.1"
-description: Delegate implementation (or, when explicitly requested, research) to GPT-6.1 Sol (high reasoning; xhigh on request) via Codex CLI. Claude plans, orchestrates, and reviews; Sol writes the code.
+version: "1.12.0"
+description: Delegate implementation (or, when explicitly requested, research) to GPT-6.2 Sol (high reasoning; xhigh on request) via Codex CLI. Claude plans, orchestrates, and reviews; Sol writes the code.
 argument-hint: "[implementation task]"
 disable-model-invocation: true
 user-invocable: true
@@ -16,7 +16,7 @@ license: MIT
 
 Task: $ARGUMENTS
 
-**Role split (strict):** Claude never edits production code in this flow. Claude plans, briefs Sol, reviews the real diff, and directs corrections. GPT-6.1 Sol (via Codex CLI) makes all code changes and runs tests.
+**Role split (strict):** Claude never edits production code in this flow. Claude plans, briefs Sol, reviews the real diff, and directs corrections. GPT-6.2 Sol (via Codex CLI) makes all code changes and runs tests.
 
 **Task routing:** Implementation tasks follow phases 1–5. If the task is research or investigation (no code changes requested), the planner model does the research itself with its own tools — do NOT invoke Sol, unless the user explicitly names Sol as the researcher ("sol research…", "have sol research", "ask sol"). In that case skip to Research mode at the bottom.
 
@@ -28,16 +28,16 @@ flow below.
 
 | Setting | Default | Meaning |
 |---|---|---|
-| `SOL_MODEL` | Codex default, else `gpt-6.1-sol` | Model passed as `-m`. Unset, the launcher follows the Codex config's own default model when that is a Sol model, and falls back to `gpt-6.1-sol` otherwise. Recorded per run, so a relaunch or resume never switches model |
+| `SOL_MODEL` | Codex default, else `gpt-6.2-sol` | Model passed as `-m`. Unset, the launcher follows the Codex config's own default model when that is a Sol model, and falls back to `gpt-6.2-sol` otherwise. Recorded per run, so a relaunch or resume never switches model |
 | `--workers N` | — | Requested worker count for this run, capped by the ceiling below; its presence engages parallel mode |
 | `SOL_MAX_WORKERS` | `3` | Ceiling on worker count — caps `--workers` and is the count used when `--workers` is absent; exceeding it is refused, never clamped |
 | `SOL_WORKTREE_SETUP` | unset | Command run in each fresh worktree (`npm ci`, `uv sync`) |
-| `SOL_EFFORT` | `high` | Reasoning effort for workers. `high` verifies its own work when a compiler and tests are in the loop, and stalls are effort-correlated (openai/codex#24260, #23807) — an xhigh stall burns the whole first-event budget before anything happens. Raise to `xhigh` for algorithmically hard briefs |
+| `SOL_EFFORT` | `high` | Reasoning effort for workers. `high` verifies its own work when a compiler and tests are in the loop, and stalls are effort-correlated (openai/codex#24260, #23807) — an xhigh stall burns the whole first-event budget before anything happens. Raise to `xhigh` for algorithmically hard briefs. `max` and `ultra` also exist on current Sol models; Codex describes `ultra` as adding automatic task delegation, which works against a brief with a declared file scope — avoid it here |
 | `SOL_FIRST_EVENT_TIMEOUT` | `300` | Seconds a worker may sit with nothing but thread/turn bookkeeping in its event log before it is stall-killed |
 | `SOL_IDLE_TIMEOUT` | `600` | Seconds without any new event after real work has started before a worker is stall-killed |
 | `SOL_COMMAND_TIMEOUT` | `1800` | Seconds an in-flight command may produce nothing before the worker is stall-killed — bounds the exemption that lets long silent builds run |
 | `SOL_WORKER_TIMEOUT` | off | Optional absolute per-worker cap in seconds. Off by default — a task's duration is not predictable, so any constant kills productive workers; the budgets above bound silence instead |
-| `SOL_STALL_RETRIES` | `1` | Automatic relaunches of a stalled worker, each a fresh session one effort step lower (`xhigh → high → medium → low`) |
+| `SOL_STALL_RETRIES` | `1` | Automatic relaunches of a stalled worker, each a fresh session one effort step lower (`ultra → max → xhigh → high → medium → low`) |
 | `SOL_WAIT_TIMEOUT` | `540` | Seconds `--wait` blocks before returning 75 with workers still live; `0` blocks until done |
 | `SOL_REPORT_SCHEMA` | bundled `references/report-schema.json` | JSON Schema Sol's final message must satisfy (`--output-schema`). Set it empty for a free-text report |
 | `SOL_RESEARCH_EFFORT` | `xhigh` | Reasoning effort for `--research`, deliberately independent of `SOL_EFFORT` |
@@ -96,7 +96,7 @@ For a visual task, list reference images in a sidecar next to the brief — `<ru
 <summary>Direct <code>codex exec</code> invocation, if you need it</summary>
 
 ```bash
-codex exec --json -m "${SOL_MODEL:-gpt-6.1-sol}" -c model_reasoning_effort=high \
+codex exec --json -m "${SOL_MODEL:-gpt-6.2-sol}" -c model_reasoning_effort=high \
   -s workspace-write --color never \
   --output-schema <skill-dir>/references/report-schema.json \
   -o "$SCRATCHPAD/sol-report.json" \
@@ -109,7 +109,7 @@ codex exec --json -m "${SOL_MODEL:-gpt-6.1-sol}" -c model_reasoning_effort=high 
 
 If the user asks afterwards what happened during a run, summarize the event log with `python3 <skill-dir>/scripts/sol-watch.py <run-dir>/workers/<slug>/events.jsonl --once` instead of reading the raw JSONL.
 
-Structure the brief as compact XML blocks (GPT-6.1 Sol responds better to explicit contracts than to prose; tighten the contract before ever raising effort). See `references/brief-template.md` for a fill-in template.
+Structure the brief as compact XML blocks (GPT-6.2 Sol responds better to explicit contracts than to prose; tighten the contract before ever raising effort). See `references/brief-template.md` for a fill-in template.
 
 - `<task>` — the user's request verbatim plus the plan and relevant repo context.
 - `<environment>` — what Sol is running in: sandbox mode, whether it has network, and any check known to be blocked there. A worker told a check is unavailable reports that plainly instead of inventing a workaround.
