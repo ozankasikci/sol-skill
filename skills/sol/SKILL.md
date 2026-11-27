@@ -1,6 +1,6 @@
 ---
 name: sol
-version: "1.12.0"
+version: "1.12.1"
 description: Delegate implementation (or, when explicitly requested, research) to GPT-6.2 Sol (high reasoning; xhigh on request) via Codex CLI. Claude plans, orchestrates, and reviews; Sol writes the code.
 argument-hint: "[implementation task]"
 disable-model-invocation: true

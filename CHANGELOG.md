@@ -4,7 +4,7 @@ All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.12.1] — 2026-11-27
 
 ### Fixed
 
@@ -520,6 +520,7 @@ First public release.
   test/lint/typecheck commands itself — none of which are `codex exec` calls, so all
   of them were blocked.
 
+[1.12.1]: https://github.com/ozankasikci/sol-skill/releases/tag/v1.12.1
 [1.12.0]: https://github.com/ozankasikci/sol-skill/releases/tag/v1.12.0
 [1.11.1]: https://github.com/ozankasikci/sol-skill/releases/tag/v1.11.1
 [1.11.0]: https://github.com/ozankasikci/sol-skill/releases/tag/v1.11.0
