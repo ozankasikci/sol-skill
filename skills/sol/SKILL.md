@@ -41,7 +41,7 @@ flow below.
 | `SOL_WAIT_TIMEOUT` | `540` | Seconds `--wait` blocks before returning 75 with workers still live; `0` blocks until done |
 | `SOL_REPORT_SCHEMA` | bundled `references/report-schema.json` | JSON Schema Sol's final message must satisfy (`--output-schema`). Set it empty for a free-text report |
 | `SOL_RESEARCH_EFFORT` | `xhigh` | Reasoning effort for `--research`, deliberately independent of `SOL_EFFORT` |
-| `SOL_SANDBOX` | `workspace-write` | Sandbox policy passed as `-s`. `danger-full-access` for a toolchain the sandbox cannot reach at all (Docker). Removes all confinement; the run warns on stderr. Cannot be set via `SOL_CODEX_CONFIG` |
+| `SOL_SANDBOX` | `workspace-write` | Sandbox policy passed as `-s`. `danger-full-access` for a toolchain the sandbox cannot reach at all (Docker). Removes all confinement; the run warns on stderr. Recorded per run, so `--wait` and `--resume` keep the launch's policy. Cannot be set via `SOL_CODEX_CONFIG` |
 | `SOL_CODEX_CONFIG` | unset | Extra `-c key=value` overrides, space separated, applied to every codex invocation the launcher makes. See **Sandboxed toolchains** below. Values must not contain spaces |
 
 **Task tracking:** If harness task tools are available, call TaskCreate at the start (short title from the request, status in_progress), TaskUpdate once per phase transition (planning → Sol implementing → reviewing → corrections), and TaskUpdate to completed in the final report — or leave it in_progress with a note if blocked. Keep updates to one line; skip entirely if the tools are unavailable.
@@ -171,7 +171,7 @@ For blocking issues, write the correction to `<run-dir>/workers/<slug>/correctio
 bash <skill-dir>/scripts/sol-parallel.sh --resume "$SCRATCHPAD/sol-run"
 ```
 
-This resumes the worker's **recorded session** — not `--last`, which after a stall relaunch or any other Codex use in between is a different session — under the same watchdog, with the same report schema, and rewrites `summary.json` and the patch. **Do not hand-roll `codex exec resume`.** It rejects `-s` and `--color` at parse time; with stderr redirected that rejection is invisible — codex exits 2 instantly, the tree stays as it was, and pre-existing green checks masquerade as a successful fix.
+This resumes the worker's **recorded session** — not `--last`, which after a stall relaunch or any other Codex use in between is a different session — under the same watchdog, with the same report schema, and rewrites `summary.json` and the patch. **Do not hand-roll `codex exec resume`.** It rejects `-s` and `--color` at parse time; with stderr redirected that rejection is invisible — codex exits 2 instantly, the tree stays as it was, and pre-existing green checks masquerade as a successful fix. Dropping `-s` is no fix: the resumed session does not inherit the launch's sandbox and can come up read-only. The launcher passes the run's recorded policy as `-c sandbox_mode=`.
 
 Send only the delta, three parts: where (`file:line`, and the `AC` id it fails), what is wrong and what is required, and the check that must pass. Not a restatement of the brief. Re-review after each round, from `summary.json` again. After 2 rounds, stop and report remaining issues to the user instead of looping.
 

@@ -4,6 +4,20 @@ All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **A resumed implementation worker could not write.** `codex exec resume`
+  rejects `-s`, and the launcher passed no sandbox at all, so a correction ran
+  on Codex's own default and came back `blocked`: read-only, approval policy
+  `never`. `--resume` now passes the policy as `-c sandbox_mode=`, after
+  `SOL_CODEX_CONFIG`, so research stays `read-only` there too.
+- **`SOL_SANDBOX` is recorded in the run directory.** A `--resume`, or the stall
+  relaunch of a `--wait` takeover, from a shell without the launch's variable
+  fell back to `workspace-write`. Both now keep the launch's policy, and say so
+  on stderr when the environment asks for a different one.
+
 ## [1.12.0] — 2026-11-17
 
 ### Changed

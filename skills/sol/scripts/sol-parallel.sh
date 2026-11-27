@@ -81,7 +81,11 @@
 #                                    bundled references/report-schema.json; set
 #                                    it empty for a free-text report. Never
 #                                    applied to --research.
-#      SOL_SANDBOX (workspace-write) sandbox policy passed as `-s`. Set to
+#      SOL_SANDBOX (workspace-write) sandbox policy passed as `-s`, and as
+#                                    `-c sandbox_mode=` on --resume, which takes
+#                                    no -s. Recorded in the run directory: a
+#                                    --wait or --resume keeps the launch's
+#                                    policy. Set to
 #                                    danger-full-access for a toolchain the
 #                                    sandbox cannot reach at all — Docker, whose
 #                                    daemon socket is a unix socket connect that
@@ -90,7 +94,8 @@
 #                                    worker can write anywhere on disk; the run
 #                                    warns on stderr whenever it is not default.
 #                                    Cannot be set via SOL_CODEX_CONFIG: an
-#                                    explicit -s beats -c sandbox_mode=.
+#                                    explicit -s beats -c sandbox_mode=, and on
+#                                    --resume this script's override comes last.
 #      SOL_CODEX_CONFIG              extra `-c key=value` overrides, space
 #                                    separated, applied to every codex
 #                                    invocation this script makes. The escape
@@ -125,6 +130,9 @@ export SOL_CODEX_CONFIG="${SOL_CODEX_CONFIG:-}"
 # explicit `-s` flag beats `-c sandbox_mode=...`: setting the mode through the
 # config channel is silently ignored, which reads as "the escape hatch does not
 # work" rather than "wrong channel". Exported for the same reason as above.
+# What the caller asked for is kept apart from the default, so a later
+# invocation can tell a request it is overruling from no request at all.
+SANDBOX_REQUESTED="${SOL_SANDBOX:-}"
 export SOL_SANDBOX="${SOL_SANDBOX:-workspace-write}"
 
 # The shape of a worker's final message. `-` rather than `:-`: an explicitly
@@ -268,6 +276,21 @@ OUT_DIR="$RUN_DIR/workers"
 # created. The marker means `--wait`, `--resume` and `--cleanup` behave without
 # the caller retyping the flag -- which nothing in the output ever prompted for.
 [ -f "$RUN_DIR/in-place" ] && IN_PLACE=1
+
+# The sandbox is a property of the run too. The shell that sends a correction,
+# or takes over a batch, need not carry the variables the launch had, and must
+# not move a worker onto another policy. A run directory written before
+# `sandbox` existed has nothing recorded and follows the environment.
+if [ "$MODE" = "wait" ] || [ "$MODE" = "resume" ]; then
+  recorded="$(cat "$RUN_DIR/sandbox" 2>/dev/null)"
+  if [ -n "$recorded" ]; then
+    if [ -n "$SANDBOX_REQUESTED" ] && [ "$SANDBOX_REQUESTED" != "$recorded" ]; then
+      printf 'sol-parallel: SOL_SANDBOX=%s ignored: this run was launched with %s, keeping %s\n' \
+        "$SANDBOX_REQUESTED" "$recorded" "$recorded" >&2
+    fi
+    SOL_SANDBOX="$recorded"
+  fi
+fi
 
 # Research is a property of the run for the same reason, and it is in-place by
 # construction: read-only, so there is nothing to isolate and nothing to commit.
@@ -428,6 +451,7 @@ create_worktrees() {
   [ "$IN_PLACE" -eq 1 ] || mkdir -p "$WORKTREE_ROOT"
   printf '%s\t%s\n' "$branch" "$sha" > "$RUN_DIR/base"
   printf '%s\n' "$MODEL" > "$RUN_DIR/model"
+  printf '%s\n' "$SOL_SANDBOX" > "$RUN_DIR/sandbox"
   if [ "$IN_PLACE" -eq 1 ]; then
     : > "$RUN_DIR/in-place"
   else
@@ -662,8 +686,12 @@ resume_workers() {
       # the brief from stdin, but resume passes the prompt as an argument.
       cfg=(); for kv in $SOL_CODEX_CONFIG; do cfg+=(-c "$kv"); done
       sch=(); [ -n "$SOL_REPORT_SCHEMA" ] && sch=(--output-schema "$SOL_REPORT_SCHEMA")
+      # The sandbox goes through -c because resume rejects -s; without it the
+      # session comes up read-only. After cfg, because the last -c wins and
+      # SOL_CODEX_CONFIG must not move the policy here any more than at launch.
       codex exec resume "$6" --json -m "$1" -c model_reasoning_effort="$2" \
         ${cfg[@]+"${cfg[@]}"} \
+        -c sandbox_mode="$SOL_SANDBOX" \
         ${sch[@]+"${sch[@]}"} \
         -o "$4/report.md" "$(cat "$5")" \
         > "$4/events.jsonl" 2> "$4/stderr.txt" < /dev/null

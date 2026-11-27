@@ -13,6 +13,7 @@ import pathlib
 import shutil
 import subprocess
 import tempfile
+import time
 
 HERE = pathlib.Path(__file__).resolve().parent
 SCRIPT = HERE.parent / "sol-parallel.sh"
@@ -157,6 +158,27 @@ if [ -n "${FAKE_COMMIT:-}" ]; then
   git -C "$cd_dir" commit -qm "worker committed" >/dev/null 2>&1
 fi
 exit "${FAKE_EXIT:-0}"
+"""
+
+
+# Wraps the fake codex with the one behaviour the sandbox tests need. The policy
+# comes from `-s`, else from the last `-c sandbox_mode=`, else it is read-only,
+# which is what a `codex exec resume` given neither came up as. A read-only
+# worker answers but writes nothing into its workspace.
+FAKE_SANDBOX_CODEX = r"""#!/usr/bin/env bash
+set -uo pipefail
+flag=""; config=""; prev=""
+for arg in "$@"; do
+  [ "$prev" = "-s" ] && flag="$arg"
+  case "$prev=$arg" in
+    -c=sandbox_mode=*) config="${arg#sandbox_mode=}"; config="${config//\"/}" ;;
+  esac
+  prev="$arg"
+done
+case "${flag:-${config:-read-only}}" in
+  read-only) export FAKE_NOCHANGE=1 ;;
+esac
+exec "$(dirname "$0")/codex-inner" "$@"
 """
 
 
@@ -2394,6 +2416,121 @@ with tempfile.TemporaryDirectory() as tmp:
     launch(repo, env, "--resume", str(run_dir))
     check("-m gpt-9-sol " in arglog.read_text(),
           f"--resume keeps the model the run was launched with (args: {arglog.read_text()!r})")
+
+print("--resume: the follow-up keeps the sandbox the run was launched with")
+with tempfile.TemporaryDirectory() as tmp:
+    root = pathlib.Path(tmp)
+    bin_dir = root / "bin"
+    install_fake_codex(bin_dir)
+    # `codex exec resume` takes no -s, and without a sandbox it comes up on
+    # Codex's own default: read-only. The fake enforces that, so these checks
+    # are about whether the resumed worker can write, not just about its flags.
+    (bin_dir / "codex").rename(bin_dir / "codex-inner")
+    shim = bin_dir / "codex"
+    shim.write_text(FAKE_SANDBOX_CODEX)
+    shim.chmod(0o755)
+    arglog = root / "args.log"
+
+    def resumed(n, *mode, launch_env=None, resume_env=None):
+        """Launch a run, then resume it from a separately built environment."""
+        repo = make_repo(root / f"repo{n}")
+        run_dir = root / f"run{n}"
+        write_tasks(run_dir, "sbx")
+        research = "--research" in mode
+        extra = {"FAKE_NOCHANGE": "1"} if research else {}
+        first = launch(repo, clean_env(bin_dir, **extra, **(launch_env or {})),
+                       "--workers", "1", *mode, str(run_dir))
+        wk = json.loads((run_dir / "summary.json").read_text())["workers"][0]
+        target = pathlib.Path(wk["worktree"]) / "fix.txt"
+        arglog.write_text("")
+        (run_dir / "workers" / "sbx" / "correction.md").write_text("fix.txt:1 — fix.\n")
+        r = launch(repo, clean_env(bin_dir, FAKE_ARGLOG=str(arglog),
+                                   FAKE_FILENAME="fix.txt", **(resume_env or {})),
+                   "--resume", str(run_dir))
+        check(first.returncode == 0 and "exec resume" in arglog.read_text(),
+              f"sanity: run {n} launched and resumed (stderr: {r.stderr[:200]})")
+        return target.exists(), arglog.read_text(), r
+
+    wrote, args, _ = resumed(1, "--in-place")
+    check(wrote, "a resumed in-place worker can write")
+    check("-c sandbox_mode=workspace-write " in args,
+          f"it is resumed at the default policy (args: {args!r})")
+
+    wrote, args, _ = resumed(2)
+    check(wrote, "a resumed worktree worker can write")
+
+    # The caller's later shell need not still carry the launch's variables.
+    wrote, args, r = resumed(3, "--in-place",
+                             launch_env={"SOL_SANDBOX": "danger-full-access"})
+    check("sandbox_mode=danger-full-access" in args,
+          f"--resume keeps the sandbox the run was launched with (args: {args!r})")
+    check("danger-full-access" in r.stderr and "write outside" in r.stderr,
+          "and still warns that confinement is dropped")
+
+    wrote, args, r = resumed(4, "--in-place",
+                             resume_env={"SOL_SANDBOX": "danger-full-access"})
+    check("sandbox_mode=danger-full-access" not in args
+          and "sandbox_mode=workspace-write" in args,
+          f"a different SOL_SANDBOX at --resume does not move the run (args: {args!r})")
+    check("keeping workspace-write" in r.stderr,
+          f"and says it was ignored (stderr: {r.stderr[:200]})")
+
+    # The last -c wins, as -s does at launch: the config channel cannot move it.
+    wrote, args, _ = resumed(5, "--in-place",
+                             resume_env={"SOL_CODEX_CONFIG": "sandbox_mode=read-only"})
+    check(wrote, "SOL_CODEX_CONFIG cannot override the run's sandbox on resume")
+
+    wrote, args, _ = resumed(6, "--research",
+                             resume_env={"SOL_SANDBOX": "danger-full-access",
+                                         "SOL_CODEX_CONFIG": "sandbox_mode=danger-full-access"})
+    check(not wrote, "a resumed research worker cannot write, whatever the environment asks")
+    check("sandbox_mode=read-only" in args,
+          f"research resumes read-only (args: {args!r})")
+
+    # A run directory from before the sandbox was recorded.
+    repo = make_repo(root / "repo7")
+    run_dir = root / "run7"
+    write_tasks(run_dir, "sbx")
+    launch(repo, clean_env(bin_dir), "--workers", "1", "--in-place", str(run_dir))
+    (run_dir / "sandbox").unlink(missing_ok=True)
+    arglog.write_text("")
+    (run_dir / "workers" / "sbx" / "correction.md").write_text("fix.txt:1 — fix.\n")
+    launch(repo, clean_env(bin_dir, FAKE_ARGLOG=str(arglog),
+                           SOL_SANDBOX="danger-full-access"), "--resume", str(run_dir))
+    check("sandbox_mode=danger-full-access" in arglog.read_text(),
+          "with nothing recorded, --resume follows SOL_SANDBOX")
+
+print("stall retry ladder: a --wait takeover relaunches under the launch's sandbox")
+with tempfile.TemporaryDirectory() as tmp:
+    root = pathlib.Path(tmp)
+    bin_dir = root / "bin"
+    install_fake_codex(bin_dir)
+    repo = make_repo(root / "repo")
+    run_dir = root / "run"
+    write_tasks(run_dir, "taken")
+    arglog = root / "args.log"
+    env = clean_env(bin_dir, SOL_SANDBOX="danger-full-access", FAKE_STALL_EFFORTS="high",
+                    SOL_FIRST_EVENT_TIMEOUT="3", SOL_STALL_RETRIES="1")
+    launcher = subprocess.Popen(
+        ["bash", str(SCRIPT), "--workers", "1", "--in-place", str(run_dir)],
+        cwd=repo, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env,
+        start_new_session=True)
+    # Kill the launcher alone, as a caller's timeout would, once its worker is up.
+    pids = run_dir / "pids"
+    deadline = time.time() + 20
+    while time.time() < deadline and not (pids.exists() and pids.read_text().strip()):
+        time.sleep(0.1)
+    launcher.kill()
+    launcher.wait(timeout=10)
+    env = clean_env(bin_dir, FAKE_ARGLOG=str(arglog), FAKE_STALL_EFFORTS="high",
+                    SOL_FIRST_EVENT_TIMEOUT="3", SOL_STALL_RETRIES="1")
+    try:
+        r = launch(repo, env, "--wait", str(run_dir), timeout=60)
+        args = arglog.read_text()
+        check(r.returncode == 0 and "-s danger-full-access" in args,
+              f"the relaunch keeps the recorded sandbox (got {r.returncode}, args: {args!r})")
+    except subprocess.TimeoutExpired:
+        check(False, "the --wait takeover timed out")
 
 print("sol-watch --run follows a real launcher run, through a stall relaunch, to its verdict")
 with tempfile.TemporaryDirectory() as tmp:
